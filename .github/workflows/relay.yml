@@ -1,0 +1,83 @@
+name: melk-hunter-relay
+
+# ربات ملک هانتر — اجرای ۲۴ ساعته روی زیرساخت ابری گیت‌هاب
+#
+# چرا این‌قدر زمان‌بندی هست؟ چون امروز یک بار زمان‌بندی ۶ ساعته اجرا نشد و ربات
+# ۲۰ دقیقه خاموش ماند. حالا سه لایهٔ امنیت داریم:
+#   ۱) اجرای فعلی خودش «اجرای بعدی» را در صف می‌گذارد (scripts/chain.py)
+#   ۲) زمان‌بندی هر ۲۰ دقیقه، همیشه یک اجرا را در صف نگه می‌دارد
+#   ۳) نگهبان مستقل هر ۱۰ دقیقه ضربان را می‌سنجد (watchdog.yml)
+# گروه concurrency یعنی همیشه فقط یکی در حال اجرا است (قانون Conflict تلگرام)
+# و اجرای بعدی در صف می‌ماند تا اجرای فعلی تمام شود.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/20 * * * *"    # نگه‌داشتن یک اجرا در صف (لایهٔ ۲)
+    - cron: "0 */6 * * *"     # زمان‌بندی اصلی ۶ ساعته
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: melk-hunter-bot
+  cancel-in-progress: false
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: نصب کتابخانه‌ها
+        run: |
+          python -m pip install -q --upgrade pip
+          pip install -q -r requirements.txt
+
+      - name: نصب موتور خواندن عکس (برای بخش «📷 افزودن از عکس»)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-fas
+          tesseract --version | head -1
+
+      - name: آماده‌سازی داده‌ها و تنظیمات (رمزگشایی دفترچه)
+        env:
+          DATA_KEY: ${{ secrets.DATA_KEY }}
+          MELKBOT_TOKEN: ${{ secrets.MELKBOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+        run: python scripts/prepare_ci.py
+
+      - name: روشن کردن ربات (با ترمیم خودکار) + گزارش زنده
+        env:
+          MELKBOT_TOKEN: ${{ secrets.MELKBOT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python scripts/status_pusher.py & PUSHER=$!
+          sleep 2
+          bash run_forever.sh 20700
+          kill $PUSHER 2>/dev/null || true
+
+      - name: ذخیرهٔ وضعیت کاربر در مخزن
+        if: always()
+        env:
+          DATA_KEY: ${{ secrets.DATA_KEY }}
+        run: python scripts/persist_state.py || true
+
+      - name: زنجیره‌سازی — اجرای بعدی را در صف بگذار
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MELKBOT_TOKEN: ${{ secrets.MELKBOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+        run: python scripts/chain.py || true
+
+      - name: گزارش پایان
+        if: always()
+        run: tail -n 15 logs/bot.log 2>/dev/null || echo "لاگی ثبت نشد"

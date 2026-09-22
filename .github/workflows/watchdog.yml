@@ -1,0 +1,40 @@
+name: melk-hunter-watchdog
+
+# نگهبان ۲۴ ساعته: هر ۱۰ دقیقه چک می‌کند ربات زنده است یا نه.
+# اگر خاموش شده باشد، خودش روشنش می‌کند و در تلگرام به شما خبر می‌دهد.
+# این لایه مستقل از ربات است؛ پس حتی اگر خود ربات یا زمان‌بندی گیت‌هاب خطا بدهد،
+# ربات بیش از چند دقیقه خاموش نمی‌ماند.
+
+on:
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "حتی اگر ربات سالم است، روشنش کن (برای تست)"
+        type: boolean
+        default: false
+  schedule:
+    - cron: "*/10 * * * *"
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: melk-hunter-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: بررسی ضربان و روشن کردن ربات در صورت خاموشی
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MELKBOT_TOKEN: ${{ secrets.MELKBOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          STALE_SEC: "600"
+          FORCE: ${{ inputs.force }}
+        run: python3 scripts/watchdog.py
