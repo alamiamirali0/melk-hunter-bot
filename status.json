@@ -1,17 +1,17 @@
 {
-  "time_utc": "2026-09-26 16:18:43",
+  "time_utc": "2026-09-26 16:20:15",
   "run": "36240902681",
-  "log_age_sec": 908,
+  "log_age_sec": 999,
   "heartbeat_file": true,
   "heartbeat": {
-    "ts": 1790439520.9972663,
-    "ok_ts": 1790439520.9972634,
+    "ts": 1790439610.994525,
+    "ok_ts": 1790439610.994522,
     "updates": 0,
     "fails": 0,
     "restarts": 0,
     "last_error": "",
     "started": 1790438613.5529492,
-    "last_ok": 1790439520.9972653,
+    "last_ok": 1790439610.9945245,
     "gap": 0.0,
     "pid": 2833,
     "polling": true
