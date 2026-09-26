@@ -1,0 +1,20 @@
+{
+  "time_utc": "2026-09-26 16:03:31",
+  "run": "36240902681",
+  "log_age_sec": -1,
+  "heartbeat_file": true,
+  "heartbeat": {
+    "ts": 1790417868.329734,
+    "ok_ts": 1790417868.3297312,
+    "updates": 0,
+    "fails": 0,
+    "restarts": 0,
+    "last_error": "",
+    "started": 1790397191.146663,
+    "last_ok": 1790417868.3297334,
+    "gap": 0.0,
+    "pid": 2925,
+    "polling": true
+  },
+  "bot_log_tail": ""
+}
