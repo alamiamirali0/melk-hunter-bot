@@ -1,0 +1,89 @@
+name: melk-hunter-handoff
+
+# «دست‌به‌دستِ بدون فاصله» — اجرای سایهٔ ربات
+#
+# اجرای فعلی (relay یا handoff) ۱۵ دقیقه قبل از پایان، یک اجرای دست‌به‌دست
+# dispatch می‌کند (scripts/status_pusher.py). این اجرا:
+#   ۱) بالا می‌آید و کتابخانه‌ها را نصب می‌کند
+#   ۲) ربات را روشن می‌کند — چون نمونهٔ قبلی هنوز polling دارد، تلگرام
+#      Conflict می‌دهد؛ لانچر (run_forever.sh با حالت سایه) هر چند ثانیه
+#      دوباره تلاش می‌کند
+#   ۳) به‌محض پایان نمونهٔ قبلی، polling را در چند ثانیه به‌دست می‌گیرد
+# ⇒ وقفهٔ بین دو اجرا ≈ چند ثانیه (در حالت فشردهٔ runnerها هم هرگز بدتر
+#    از حالتِ قبلی — همان راه‌اندازیِ عادی)
+#
+# concurrency جدا: این اجرا با گروه relay رقابت نمی‌کند و باید موازی بالا بیاید.
+# زنجیرهٔ بعدی: خودش ۱۵ دقیقه قبل از پایان، handoff بعدی را می‌فرستد.
+# لایه‌های پشتیبان: زمان‌بندی ۶ ساعتهٔ relay + نگهبان ۱۰ دقیقه‌ای.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: melk-hunter-handoff
+  cancel-in-progress: false
+
+jobs:
+  bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: نصب کتابخانه‌ها
+        run: |
+          python -m pip install -q --upgrade pip
+          pip install -q -r requirements.txt
+
+      - name: نصب موتور خواندن عکس و PDF (برای «افزودن از عکس» و فایل‌های PDF)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-fas poppler-utils
+          tesseract --version | head -1
+          pdftotext -v 2>&1 | head -1 || true
+
+      - name: آماده‌سازی داده‌ها و تنظیمات (رمزگشایی دفترچه)
+        env:
+          DATA_KEY: ${{ secrets.DATA_KEY }}
+          MELKBOT_TOKEN: ${{ secrets.MELKBOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+        run: python scripts/prepare_ci.py
+
+      - name: روشن کردن ربات (حالت سایه — منتظرِ نوبت) + گزارش زنده
+        env:
+          MELKBOT_TOKEN: ${{ secrets.MELKBOT_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HANDOFF_AT_SEC: "19800"
+        run: |
+          python scripts/status_pusher.py & PUSHER=$!
+          sleep 2
+          bash run_forever.sh 20700 2700
+          kill $PUSHER 2>/dev/null || true
+
+      - name: ذخیرهٔ وضعیت کاربر در مخزن
+        if: always()
+        env:
+          DATA_KEY: ${{ secrets.DATA_KEY }}
+        run: python scripts/persist_state.py || true
+
+      - name: زنجیرهٔ پشتیبان — اگر dispatch زودهنگام نشده باشد
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MELKBOT_TOKEN: ${{ secrets.MELKBOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+          CHAIN_WORKFLOW: "handoff.yml"
+        run: python scripts/chain.py || true
+
+      - name: گزارش پایان
+        if: always()
+        run: tail -n 15 logs/bot.log 2>/dev/null || echo "لاگی ثبت نشد"

@@ -1,0 +1,45 @@
+name: diag
+
+# اجرای تشخیصی کوتاه — لاگ کامل محیط سرور را نشان می‌دهد
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: melk-hunter-diag
+  cancel-in-progress: true
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: نصب کتابخانه‌ها
+        run: |
+          python -m pip install -q --upgrade pip
+          pip install -q -r requirements.txt
+
+      - name: آماده‌سازی داده‌ها
+        env:
+          DATA_KEY: ${{ secrets.DATA_KEY }}
+          MELKBOT_TOKEN: ${{ secrets.MELKBOT_TOKEN }}
+          OWNER_ID: ${{ secrets.OWNER_ID }}
+        run: python scripts/prepare_ci.py
+
+      - name: تشخیص
+        env:
+          MELKBOT_TOKEN: ${{ secrets.MELKBOT_TOKEN }}
+        run: python scripts/diag.py
+
+      - name: نتیجهٔ نهایی
+        if: always()
+        run: echo "✅ تشخیص تمام شد"

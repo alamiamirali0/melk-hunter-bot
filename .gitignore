@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+logs/
+exports/
+config.json
+data/contacts.json
+data/raw.txt
+data/meta.json
+data/extra.json
+data/bot.sqlite3
+data/heartbeat.json
+data/panel_key.txt
+data/github_key.txt
