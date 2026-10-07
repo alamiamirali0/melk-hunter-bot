@@ -1,0 +1,83 @@
+name: proxtest
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: test proxies
+        run: |
+          cat > proxies.txt <<'EOF'
+178.252.165.226:1080 socks5
+185.109.244.69:8080 http
+185.112.35.184:3128 http
+185.140.232.21:1400 http
+185.211.59.126:10808 https
+185.49.96.89:8080 http
+185.60.59.245:10808 socks4
+185.83.182.206:2020 https
+185.88.177.40:80 http
+194.31.108.109:2080 https
+195.181.40.34:8080 http
+2.188.210.83:4443 http
+213.207.198.254:8080 http
+217.219.83.186:2222 http
+31.25.92.114:8080 http
+37.32.4.53:1082 socks5
+37.32.43.137:1080 socks5
+45.139.10.136:1080 socks5
+46.100.44.35:8080 http
+5.144.133.195:9050 socks5
+5.200.72.58:3128 http
+5.200.72.60:3128 http
+5.200.72.62:3128 http
+5.202.120.123:3128 http
+5.57.32.204:10808 socks4
+78.39.253.48:8080 http
+79.127.30.250:8080 http
+80.191.243.212:1080 socks5
+80.191.40.130:5678 socks4
+80.191.40.131:5678 socks4
+80.191.40.133:5678 socks4
+81.12.28.35:3128 https
+85.133.169.45:8118 http
+87.107.109.254:2180 socks4
+87.107.184.182:8080 https
+87.107.54.155:10808 socks4
+87.107.68.231:1081 socks4
+88.135.36.246:1080 socks5
+89.219.192.209:8080 http
+89.44.241.98:1080 socks4
+89.46.219.130:8080 http
+89.46.219.133:80 https
+93.118.109.220:8080 http
+93.118.120.60:8080 http
+93.118.120.60:8080 https
+94.182.177.92:80 http
+94.183.6.226:9090 https
+EOF
+          cat proxies.txt | xargs -P 10 -I{} sh -c '
+            line="{}"; proto="${line##* }"; hostport="${line% *}";
+            case "$proto" in
+              socks5) xurl="socks5h://$hostport";;
+              socks4) xurl="socks4a://$hostport";;
+              *) xurl="http://$hostport";;
+            esac
+            body=$(curl -s --max-time 15 -x "$xurl" https://kashano.ir 2>/dev/null)
+            code=$?
+            size=${#body}
+            if [ $code -eq 0 ] && echo "$body" | grep -q "داخل کشور"; then
+              mark="BLOCKED_IP";
+            elif [ $code -eq 0 ] && [ $size -gt 3000 ]; then
+              mark="REAL_PAGE";
+            elif [ $code -eq 0 ]; then
+              mark="SMALL($size)";
+            else
+              mark="FAIL($code)";
+            fi
+            echo "$mark | $proto $hostport"
+          ' | sort | tee results.txt
+          echo "=== SUMMARY ==="
+          grep -c "REAL_PAGE" results.txt || true
+          grep "REAL_PAGE" results.txt || true
