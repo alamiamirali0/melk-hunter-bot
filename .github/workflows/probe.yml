@@ -1,0 +1,31 @@
+name: probe-kashano
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: probe kashano.ir
+        run: |
+          echo "== curl (domain) =="
+          curl -s --max-time 30 -o /tmp/s.html -w "http=%{http_code} bytes=%{size_download} appconnect=%{time_appconnect}s\n" \
+            -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36" \
+            https://kashano.ir/signin || echo "curl failed rc=$?"
+          head -c 300 /tmp/s.html 2>/dev/null; echo
+          echo "== python requests =="
+          python3 - <<'EOF'
+          import urllib.request
+          req = urllib.request.Request("https://kashano.ir/signin",
+              headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0"})
+          try:
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  b = r.read()
+                  print("py OK:", r.status, len(b), "bytes")
+          except Exception as e:
+              print("py FAIL:", type(e).__name__, str(e)[:150])
+          EOF
+          echo "== DNS/ترافیک =="
+          getent hosts kashano.ir || true
