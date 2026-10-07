@@ -23,8 +23,8 @@ PROXIES = [
 ]
 
 
-def log(m):
-    print(f"[kashano] {m}", flush=True)
+def log(*args):
+    print("[kashano] " + " ".join(str(a) for a in args), flush=True)
 
 
 def norm_phone(s):
