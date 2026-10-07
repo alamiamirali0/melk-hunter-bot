@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
-"""اجرای در runner گیت‌هاب: ورود به کاشانو + استخراج فایلینگ. نسخهٔ ۴ — دیباگ پیامک."""
-import os, re, time, base64, json, subprocess, urllib.request, urllib.error
+"""اجرای در runner گیت‌هاب: ورود به کاشانو + استخراج فایلینگ. نسخهٔ ۶ — رمز عبور + فراموشی رمز."""
+import os, re, time, base64, json, random, subprocess, urllib.request, urllib.error
 from pathlib import Path
 
 PHONE = "09201231249"
+PIN = "88047108"          # رمزِ احتمالی حساب
 REPO = os.environ.get("GITHUB_REPOSITORY", "")
 TOK = os.environ.get("GITHUB_TOKEN", "")
 OTP_BRANCH = "kashano-otp"
@@ -61,8 +62,7 @@ def push_out(tag=""):
     env["GIT_TERMINAL_PROMPT"] = "0"
 
     def g(*a):
-        r = subprocess.run(["git", *a], check=False, env=env, capture_output=True, text=True)
-        return r
+        return subprocess.run(["git", *a], check=False, env=env, capture_output=True, text=True)
 
     g("config", "user.email", "ci@k.local")
     g("config", "user.name", "ci")
@@ -79,7 +79,6 @@ def push_out(tag=""):
 
 
 def capture_diag(page, tag):
-    """متن + اسکرین‌شات + HTML صفحه را برای عیب‌یابی می‌نویسد."""
     try:
         txt = page.inner_text("body")
     except Exception:
@@ -103,7 +102,7 @@ def capture_diag(page, tag):
 
 def try_resend(page, tag=""):
     """دکمهٔ «ارسال مجدد کد» را پیدا می‌کند و کلیک می‌کند."""
-    txt = capture_diag(page, f"_before{tag}")
+    capture_diag(page, f"_before{tag}")
     clicked = False
     for sel in ("button", "a", "span", "div"):
         if clicked:
@@ -136,11 +135,8 @@ def try_resend(page, tag=""):
     time.sleep(5)
     after = capture_diag(page, f"_after{tag}")
     if clicked:
-        # آیا پیام «ارسال شد» یا شمارش معکوس آمده؟
-        tail = after[-400:].replace("\n", " | ")
-        log("پس از resend (پایان متن):", tail[:300])
-    else:
-        log("دکمهٔ resend پیدا نشد — متن صفحه در diag ثبت شد")
+        tail = after[-300:].replace("\n", " | ")
+        log("پس از resend (پایان متن):", tail[:250])
     return clicked
 
 
@@ -148,14 +144,14 @@ def submit_code(page, code, tag=""):
     page.screenshot(path=str(OUT_DIR / f"code_page{tag}.png"))
     (OUT_DIR / f"code_page{tag}.html").write_text(page.content(), encoding="utf-8")
     try:
-        page.wait_for_selector("input:visible", timeout=35000)
+        page.wait_for_selector("input:visible", timeout=30000)
     except Exception:
         log(f"فیلد کد پیدا نشد{tag}")
         return False
     time.sleep(1)
     ins = page.locator("input:visible")
     n = ins.count()
-    log(f"{n} فیلدِ ورودی در صفحهٔ کد{tag}")
+    log(f"{n} فیلدِ ورودی در صفحه{tag}")
     if n == 0:
         return False
     try:
@@ -170,11 +166,11 @@ def submit_code(page, code, tag=""):
             target.fill("")
             target.type(code, delay=90)
     except Exception as e:
-        log(f"نویسندگی کد خطا: {type(e).__name__}: {str(e)[:100]}")
+        log(f"نویسندگی خطا: {type(e).__name__}: {str(e)[:100]}")
         return False
     time.sleep(1)
     clicked = False
-    for nm in ("تأیید", "ورود", "ادامه", "تأیید کد", "Verify", "Confirm"):
+    for nm in ("تأیید", "ورود", "ادامه", "ثبت", "Verify", "Confirm"):
         b = page.get_by_role("button", name=nm)
         if b.count():
             try:
@@ -185,15 +181,71 @@ def submit_code(page, code, tag=""):
                 pass
     if not clicked:
         page.keyboard.press("Enter")
-    time.sleep(15)
+    time.sleep(12)
     page.screenshot(path=str(OUT_DIR / f"after_code{tag}.png"))
     (OUT_DIR / f"after_code{tag}.html").write_text(page.content(), encoding="utf-8")
     try:
         still = "signin" in page.url.lower() or "sign-in" in page.url.lower()
     except Exception:
         still = True
-    log(f"URL بعد از ارسال کد{tag}: {page.url}")
+    log(f"URL بعد از ارسال{tag}: {page.url}")
     return not still
+
+
+def wait_user_code(page, timeout_s=900):
+    """کدِ تازه را از فایلِ مخزن می‌خواند (با resend دوره‌ای)."""
+    code = None
+    deadline = time.time() + timeout_s
+    last_resend = time.time()
+    waited = 0
+    while time.time() < deadline:
+        st, res = api(f"/repos/{REPO}/contents/{OTP_PATH}?ref={OTP_BRANCH}")
+        if st == 200 and res.get("content"):
+            code = base64.b64decode(res["content"]).decode().strip()
+            log(f"✅ کد از فایل خوانده شد ({len(code)} رقم)")
+            return code
+        waited += 8
+        if waited <= 120 and waited % 24 == 0:
+            log(f"صبر برای کدِ کاربر... ({waited}s)")
+        if time.time() - last_resend > 150:
+            last_resend = time.time()
+            log("تلاش resend دوباره...")
+            try_resend(page, "_loop")
+        time.sleep(8)
+    return None
+
+
+def login_ok(page):
+    try:
+        t = page.inner_text("body")
+        u = page.url.lower()
+    except Exception:
+        return False
+    return "signin" not in u and "ورود" not in t and "رمز عبور" not in t
+
+
+def enter_password(page, pw):
+    ptype = page.locator("input[type=password]:visible")
+    if ptype.count():
+        target = ptype.first
+    else:
+        ins = page.locator("input:visible")
+        target = ins.nth(ins.count() - 1)
+    target.click()
+    target.fill("")
+    target.type(pw, delay=80)
+    time.sleep(1)
+    for nm in ("ادامه", "ورود", "تأیید", "Login"):
+        b = page.get_by_role("button", name=nm)
+        if b.count():
+            try:
+                b.first.click()
+                break
+            except Exception:
+                pass
+    else:
+        page.keyboard.press("Enter")
+    time.sleep(12)
 
 
 def collect_rows(page):
@@ -245,7 +297,6 @@ def main():
         return ("داخل کشور" in t) or ("آی پی های داخل" in t) or ("متعلق به ایران نیست" in t)
 
     def try_signin(browser, px):
-        """بازکردن signin با یک پروکسی؛ صفحهٔ واقعی را برمی‌گرداند یا None."""
         log(f"تلاش با پروکسی: {px or 'مستقیم'}")
         c = None
         try:
@@ -262,8 +313,7 @@ def main():
                 return None, None
             if p.locator("input:visible").count() == 0:
                 log("  ؟ فیلدی پیدا نشد")
-                (OUT_DIR / f"mystery_{(px or 'direct').split(':')[0]}.txt").write_text(
-                    p.url + "\n\n" + p.inner_text("body"), encoding="utf-8")
+                (OUT_DIR / "mystery.txt").write_text(p.url + "\n\n" + p.inner_text("body"), encoding="utf-8")
                 c.close()
                 return None, None
             log("  ✅ صفحهٔ واقعیِ signin باز شد")
@@ -298,7 +348,7 @@ def main():
         time.sleep(1)
         page.screenshot(path=str(OUT_DIR / "1_phone.png"))
         page.get_by_role("button", name="ادامه").click()
-        log("شماره فرستاده شد — منتظر صفحهٔ کد")
+        log("شماره فرستاده شد — منتظر مرحلهٔ بعد")
         time.sleep(15)
 
         if is_blocked(page):
@@ -308,47 +358,122 @@ def main():
             browser.close()
             return
 
-        # صفحهٔ کد: دیباگ + دکمهٔ ارسال مجدد + push اولیه
-        capture_diag(page, "_codepage")
-        try_resend(page, "_1")
-        push_out("_early")
+        capture_diag(page, "_step2")
+        push_out("_step2")
+        body2 = page.inner_text("body")
+        log("مرحلهٔ ۲:", " ".join(body2.split())[:150])
 
-        # صبر برای کد از کاربر (با تلاش resend هر ۲/۵ دقیقه)
-        code = None
-        deadline = time.time() + 900
-        last_resend = time.time()
-        waited = 0
-        while time.time() < deadline:
-            st, res = api(f"/repos/{REPO}/contents/{OTP_PATH}?ref={OTP_BRANCH}")
-            if st == 200 and res.get("content"):
-                code = base64.b64decode(res["content"]).decode().strip()
-                log(f"✅ کد از فایل خوانده شد ({len(code)} رقم)")
-                break
-            waited += 8
-            if waited <= 60 and waited % 24 == 0:
-                log(f"صبر برای کدِ کاربر... ({waited}s)")
-            if time.time() - last_resend > 150:
-                last_resend = time.time()
-                log("تلاش resend دوباره...")
-                try_resend(page, "_loop")
-            time.sleep(8)
+        newpass = None
+        logged = False
+        if "رمز عبور" in body2:
+            # --- مسیر رمز عبور ---
+            log(f"مرحلهٔ رمز عبور — {PIN} را امتحان می‌کنم")
+            enter_password(page, PIN)
+            capture_diag(page, "_afterpw")
+            push_out("_afterpw")
+            logged = login_ok(page)
+            if logged:
+                log("✅ رمز قبلی درست بود — وارد شدیم!")
+            else:
+                log("رمز قبلی جواب نداد — مسیر «فراموشی رمز»")
+                f = page.get_by_text("فراموش کرده", exact=False)
+                if f.count():
+                    f.first.click()
+                    time.sleep(10)
+                capture_diag(page, "_forgot")
+                push_out("_forgot")
+                # گاهی در مسیر فراموشی دوباره شماره می‌خواهد
+                for _ in range(2):
+                    bt = page.inner_text("body")
+                    vis = page.locator("input:visible")
+                    if is_blocked(page) or not vis.count() or "شماره" not in bt:
+                        break
+                    t2 = vis.first
+                    t2.click()
+                    t2.fill("")
+                    t2.type(PHONE, delay=50)
+                    for nm in ("ادامه", "تأیید", "ارسال"):
+                        b2 = page.get_by_role("button", name=nm)
+                        if b2.count():
+                            try:
+                                b2.first.click()
+                                break
+                            except Exception:
+                                pass
+                    else:
+                        page.keyboard.press("Enter")
+                    time.sleep(10)
+                    capture_diag(page, "_forgot_phone")
+                    push_out("_forgot_phone")
+                log("در مسیر فراموشی رمز — منتظر کدِ پیامک از کاربر")
+                code = wait_user_code(page)
+                if not code:
+                    (OUT_DIR / "STATUS").write_text("NO_SMS_RECEIVED")
+                    push_out("_nosms")
+                    browser.close()
+                    return
+                submit_code(page, code, tag="_reset")
+                capture_diag(page, "_afterreset")
+                push_out("_afterreset")
+                body_r = page.inner_text("body")
+                if "رمز جدید" in body_r or "تکرار" in body_r or "رمز عبور جدید" in body_r or "confirm" in body_r.lower():
+                    newpass = "Kashano" + "".join(random.choice("23456789") for _ in range(6)) + "!"
+                    log("صفحهٔ رمز جدید — رمز تازه تنظیم می‌کنم")
+                    ins = page.locator("input:visible")
+                    n = ins.count()
+                    for i in range(min(n, 2)):
+                        ins.nth(i).click()
+                        ins.nth(i).fill("")
+                        ins.nth(i).type(newpass, delay=60)
+                    for nm in ("ثبت", "ذخیره", "ادامه", "تأیید", "Confirm"):
+                        b3 = page.get_by_role("button", name=nm)
+                        if b3.count():
+                            try:
+                                b3.first.click()
+                                break
+                            except Exception:
+                                pass
+                    else:
+                        page.keyboard.press("Enter")
+                    time.sleep(12)
+                    capture_diag(page, "_afternewpw")
+                    push_out("_afternewpw")
+                    # شاید حالا مستقیم وارد شد، یا صفحهٔ ورود با رمز جدید
+                    if not login_ok(page):
+                        capture_diag(page, "_relogin_check")
+                        vis = page.locator("input:visible")
+                        if vis.count() and ("ورود" in page.inner_text("body") or "رمز" in page.inner_text("body")):
+                            enter_password(page, newpass)
+                            capture_diag(page, "_relogin")
+                            push_out("_relogin")
+                    logged = login_ok(page)
+                else:
+                    logged = login_ok(page)
+        else:
+            # --- مسیر OTP مستقیم (اگر صفحهٔ کد بیاید) ---
+            log("صفحهٔ کد — منتظر کدِ پیامک از کاربر")
+            try_resend(page, "_1")
+            push_out("_early")
+            code = wait_user_code(page)
+            if not code:
+                (OUT_DIR / "STATUS").write_text("NO_SMS_RECEIVED")
+                push_out("_nosms")
+                browser.close()
+                return
+            ok = submit_code(page, code, tag="")
+            logged = login_ok(page) and ok
 
-        if not code:
-            (OUT_DIR / "STATUS").write_text("NO_SMS_RECEIVED")
-            log("❌ کدی نرسید — STATUS=NO_SMS_RECEIVED")
-            push_out("_nosms")
-            browser.close()
-            return
-
-        ok = submit_code(page, code, tag="")
-        log(f"تلاشِ کدِ تازه: {ok}")
-        if not ok:
-            (OUT_DIR / "STATUS").write_text("BAD_CODE")
-            push_out("_badcode")
+        if not logged:
+            (OUT_DIR / "STATUS").write_text("LOGIN_FAILED")
+            capture_diag(page, "_finalfail")
+            push_out("_loginfail")
             browser.close()
             return
 
         log("✅ وارد شدیم!")
+        if newpass:
+            (OUT_DIR / "NEW_PASSWORD.txt").write_text(newpass, encoding="utf-8")
+            log("رمز جدید تنظیم شد — در فایل NEW_PASSWORD.txt")
         capture_diag(page, "_loggedin")
 
         # فایلینگ
