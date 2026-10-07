@@ -101,25 +101,48 @@ def collect_rows(page):
     return rows
 
 
-def submit_code(page, code):
-    page.screenshot(path=str(OUT_DIR / "code_page.png"))
-    (OUT_DIR / "code_page.html").write_text(page.content(), encoding="utf-8")
+def submit_code(page, code, tag=""):
+    page.screenshot(path=str(OUT_DIR / f"code_page{tag}.png"))
+    (OUT_DIR / f"code_page{tag}.html").write_text(page.content(), encoding="utf-8")
+    try:
+        page.wait_for_selector("input:visible", timeout=35000)
+    except Exception:
+        log(f"فیلد کد پیدا نشد{tag} — احتمالاً صفحهٔ متفاوتی است")
+        return False
+    time.sleep(1)
     ins = page.locator("input:visible")
     n = ins.count()
-    target = ins.nth(n - 1) if n else page.locator("input").last
-    target.click(); target.fill("")
-    target.type(code, delay=80)
+    log(f"{n} فیلدِ ورودی در صفحهٔ کد{tag}")
+    if n == 0:
+        return False
+    try:
+        if n >= 3:
+            # جعبه‌های OTP (هر رقم یک فیلد) — در اولی بنویس؛ خودکار جلو می‌رود
+            first = ins.first
+            first.click()
+            for ch in code:
+                first.type(ch, delay=150)
+        else:
+            target = ins.nth(n - 1)
+            target.click(); target.fill("")
+            target.type(code, delay=90)
+    except Exception as e:
+        log(f"نویسندگی کد خطا: {type(e).__name__}: {str(e)[:100]}")
+        return False
     time.sleep(1)
     clicked = False
     for nm in ("تأیید", "ورود", "ادامه", "تأیید کد", "Verify", "Confirm"):
         b = page.get_by_role("button", name=nm)
         if b.count():
-            b.first.click(); clicked = True; break
+            try:
+                b.first.click(); clicked = True; break
+            except Exception:
+                pass
     if not clicked:
         page.keyboard.press("Enter")
     time.sleep(15)
-    page.screenshot(path=str(OUT_DIR / "after_code.png"))
-    (OUT_DIR / "after_code.html").write_text(page.content(), encoding="utf-8")
+    page.screenshot(path=str(OUT_DIR / f"after_code{tag}.png"))
+    (OUT_DIR / f"after_code{tag}.html").write_text(page.content(), encoding="utf-8")
     return "signin" not in page.url.lower() and "sign-in" not in page.url.lower()
 
 
@@ -154,12 +177,12 @@ def main():
         log("شماره فرستاده شد — منتظر کادرِ کد")
         time.sleep(12)
 
-        ok = submit_code(page, PIN)
+        ok = submit_code(page, PIN, tag="")
         log(f"تلاشِ PIN: {ok}")
         if not ok:
             code = read_otp_file()
             if code:
-                ok = submit_code(page, code)
+                ok = submit_code(page, code, tag="_2")
                 log(f"تلاشِ کدِ تازه: {ok}")
             if not ok:
                 (OUT_DIR / "STATUS").write_text("NEEDS_CODE_RETRY")
@@ -226,4 +249,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        log(f"❌ خطای غیرمنتظره: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        try:
+            (OUT_DIR / "STATUS").write_text(f"CRASH:{type(e).__name__}:{str(e)[:120]}")
+            push_out()
+        except Exception as e2:
+            log("push خطا هم نشد:", e2)
+        raise
