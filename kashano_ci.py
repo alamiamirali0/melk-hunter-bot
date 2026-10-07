@@ -432,7 +432,26 @@ def main():
                 log("  ❌ صفحهٔ احراز دفتر نیامد")
                 c.close()
                 return None
-            log("  صفحهٔ احراز IP دفتر — درخواست پیامک کد تایید")
+            log("  صفحهٔ احراز IP دفتر — مرحلهٔ ۱: کد امنیتی")
+            # کد امنیتی: از فایل sec_code.txt (در شاخهٔ otp) یا پیش‌فرض PIN
+            sec_code = PIN
+            st_sec, res_sec = api(f"/repos/{REPO}/contents/sec_code.txt?ref={OTP_BRANCH}")
+            if st_sec == 200 and res_sec.get("content"):
+                v = base64.b64decode(res_sec["content"]).decode().strip()
+                if v:
+                    sec_code = v
+                    try:
+                        api(f"/repos/{REPO}/contents/sec_code.txt?ref={OTP_BRANCH}",
+                            method="DELETE", payload={"sha": res_sec["sha"], "message": "consumed"})
+                    except Exception:
+                        pass
+            log(f"  کد امنیتیِ مورد استفاده: {sec_code}")
+            ins = p.locator("input:visible")
+            if ins.count() >= 1:
+                ins.nth(0).click()
+                ins.nth(0).fill("")
+                ins.nth(0).type(sec_code, delay=90)
+            time.sleep(1)
             for loc in (p.get_by_role("button", name="درخواست پیامک"),
                         p.get_by_text("درخواست پیامک"),
                         p.get_by_text("درخواست کد")):
@@ -443,16 +462,23 @@ def main():
                     except Exception:
                         pass
             time.sleep(10)
-            capture_diag(p, f"_sms_requested{tag}")
-            push_out(f"_sms{tag}")
-            log("  پیامک درخواست شد — منتظر کدها از کاربر")
+            capture_diag(p, f"_sec_tried{tag}")
+            push_out(f"_sec{tag}")
+            errt = p.inner_text("body")
+            if ("نادرست" in errt) or ("غلط" in errt) or ("نامعتبر" in errt) or ("شکست" in errt):
+                (OUT_DIR / "STATUS").write_text(f"SEC_CODE_REJECTED:{sec_code}")
+                log("  ❌ کد امنیتی پذیرفته نشد")
+                push_out(f"_secbad{tag}")
+                c.close()
+                return "STOP"
+            log("  مرحلهٔ ۲: منتظر کدِ پیامک از کاربر")
             codes = wait_user_codes(p, timeout_s=1200)
             if not codes:
                 log("  کدی نرسید")
                 c.close()
                 return None
-            sec, sms = codes
-            enter_office_codes(p, sec, sms)
+            _, sms = codes
+            enter_office_codes(p, "", sms)
             capture_diag(p, f"_afteroffice{tag}")
             push_out(f"_office{tag}")
             if login_ok(p):
@@ -461,8 +487,8 @@ def main():
             log("  تلاش اول احراز جواب نداد — ۴ دقیقه منتظر کد تازه")
             codes2 = wait_user_codes(p, timeout_s=240)
             if codes2:
-                sec, sms = codes2
-                enter_office_codes(p, sec, sms)
+                _, sms = codes2
+                enter_office_codes(p, "", sms)
                 capture_diag(p, f"_afteroffice2{tag}")
                 push_out(f"_office2{tag}")
                 if login_ok(p):
@@ -492,13 +518,17 @@ def main():
                 attempts.append((px, f"r{rnd}p{i}"))
         for px, tag in attempts:
             res = attempt_login(browser, px, tag)
+            if res == "STOP":
+                log("تلاش‌های بیشتر بی‌فایده است — توقف")
+                break
             if res:
                 ctx, page = res
                 break
             time.sleep(8)
         if not ctx:
-            (OUT_DIR / "STATUS").write_text("ALL_PROXIES_FAILED")
-            log("❌ هیچ تلاشی به نتیجه نرسید")
+            if not (OUT_DIR / "STATUS").exists():
+                (OUT_DIR / "STATUS").write_text("ALL_PROXIES_FAILED")
+            log("❌ به نتیجه نرسید")
             push_out("_allfailed")
             browser.close()
             return
