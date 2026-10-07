@@ -13,6 +13,13 @@ OUT_DIR = Path("kashano_out")
 OUT_DIR.mkdir(exist_ok=True)
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?98|0)?9\d{9}(?!\d)")
 RESEND_RE = re.compile(r"(ارسال|دوباره|مجدد|retry|resend|again)", re.I)
+# پروکسی‌های ایرانی که از runner تست شدند (به ترتیب اولویت)
+PROXIES = [
+    "http://93.118.120.60:8080",
+    "http://79.127.30.250:8080",
+    "http://185.112.35.184:3128",
+    "http://217.219.83.186:2222",
+]
 
 
 def log(m):
@@ -229,14 +236,62 @@ def main():
     from playwright.sync_api import sync_playwright
     UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+    def is_blocked(p):
+        try:
+            t = p.inner_text("body")
+        except Exception:
+            return False
+        return ("داخل کشور" in t) or ("آی پی های داخل" in t) or ("متعلق به ایران نیست" in t)
+
+    def try_signin(browser, px):
+        """بازکردن signin با یک پروکسی؛ صفحهٔ واقعی را برمی‌گرداند یا None."""
+        log(f"تلاش با پروکسی: {px or 'مستقیم'}")
+        c = None
+        try:
+            kw = dict(user_agent=UA, locale="fa-IR", viewport={"width": 1366, "height": 900})
+            if px:
+                kw["proxy"] = {"server": px}
+            c = browser.new_context(**kw)
+            p = c.new_page()
+            p.goto("https://kashano.ir/signin", wait_until="domcontentloaded", timeout=60000)
+            time.sleep(10)
+            if is_blocked(p):
+                log("  ❌ هنوز پیامِ IP غیرایرانی — پروکسی رد شد")
+                c.close()
+                return None, None
+            if p.locator("input:visible").count() == 0:
+                log("  ؟ فیلدی پیدا نشد")
+                (OUT_DIR / f"mystery_{(px or 'direct').split(':')[0]}.txt").write_text(
+                    p.url + "\n\n" + p.inner_text("body"), encoding="utf-8")
+                c.close()
+                return None, None
+            log("  ✅ صفحهٔ واقعیِ signin باز شد")
+            return c, p
+        except Exception as e:
+            log(f"  خطا: {type(e).__name__}: {str(e)[:120]}")
+            if c:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            return None, None
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
-        ctx = browser.new_context(user_agent=UA, locale="fa-IR", viewport={"width": 1366, "height": 900})
-        page = ctx.new_page()
-        log("بازکردن signin...")
-        page.goto("https://kashano.ir/signin", wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_selector("input", timeout=30000)
-        inp = page.locator("input").first
+        ctx = page = None
+        for px in PROXIES + [None]:
+            ctx, page = try_signin(browser, px)
+            if ctx:
+                break
+        if not ctx:
+            (OUT_DIR / "STATUS").write_text("ALL_PROXIES_BLOCKED")
+            log("❌ هیچ پروکسی‌ای عبور نکرد")
+            push_out("_allblocked")
+            browser.close()
+            return
+
+        inp = page.locator("input:visible").first
         inp.click()
         inp.fill("")
         inp.type(PHONE, delay=50)
@@ -245,6 +300,13 @@ def main():
         page.get_by_role("button", name="ادامه").click()
         log("شماره فرستاده شد — منتظر صفحهٔ کد")
         time.sleep(15)
+
+        if is_blocked(page):
+            (OUT_DIR / "STATUS").write_text("BLOCKED_AFTER_SUBMIT")
+            capture_diag(page, "_blocked_after_submit")
+            push_out("_blocked")
+            browser.close()
+            return
 
         # صفحهٔ کد: دیباگ + دکمهٔ ارسال مجدد + push اولیه
         capture_diag(page, "_codepage")
