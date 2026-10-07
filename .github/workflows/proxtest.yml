@@ -4,33 +4,56 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
-      - name: test proxies
+      - name: collect and test IR proxies
         run: |
-          echo "MTc4LjI1Mi4xNjUuMjI2OjEwODAgc29ja3M1CjE4NS4xMDkuMjQ0LjY5OjgwODAgaHR0cAoxODUuMTEyLjM1LjE4NDozMTI4IGh0dHAKMTg1LjE0MC4yMzIuMjE6MTQwMCBodHRwCjE4NS4yMTEuNTkuMTI2OjEwODA4IGh0dHBzCjE4NS40OS45Ni44OTo4MDgwIGh0dHAKMTg1LjYwLjU5LjI0NToxMDgwOCBzb2NrczQKMTg1LjgzLjE4Mi4yMDY6MjAyMCBodHRwcwoxODUuODguMTc3LjQwOjgwIGh0dHAKMTk0LjMxLjEwOC4xMDk6MjA4MCBodHRwcwoxOTUuMTgxLjQwLjM0OjgwODAgaHR0cAoyLjE4OC4yMTAuODM6NDQ0MyBodHRwCjIxMy4yMDcuMTk4LjI1NDo4MDgwIGh0dHAKMjE3LjIxOS44My4xODY6MjIyMiBodHRwCjMxLjI1LjkyLjExNDo4MDgwIGh0dHAKMzcuMzIuNC41MzoxMDgyIHNvY2tzNQozNy4zMi40My4xMzc6MTA4MCBzb2NrczUKNDUuMTM5LjEwLjEzNjoxMDgwIHNvY2tzNQo0Ni4xMDAuNDQuMzU6ODA4MCBodHRwCjUuMTQ0LjEzMy4xOTU6OTA1MCBzb2NrczUKNS4yMDAuNzIuNTg6MzEyOCBodHRwCjUuMjAwLjcyLjYwOjMxMjggaHR0cAo1LjIwMC43Mi42MjozMTI4IGh0dHAKNS4yMDIuMTIwLjEyMzozMTI4IGh0dHAKNS41Ny4zMi4yMDQ6MTA4MDggc29ja3M0Cjc4LjM5LjI1My40ODo4MDgwIGh0dHAKNzkuMTI3LjMwLjI1MDo4MDgwIGh0dHAKODAuMTkxLjI0My4yMTI6MTA4MCBzb2NrczUKODAuMTkxLjQwLjEzMDo1Njc4IHNvY2tzNAo4MC4xOTEuNDAuMTMxOjU2Nzggc29ja3M0CjgwLjE5MS40MC4xMzM6NTY3OCBzb2NrczQKODEuMTIuMjguMzU6MzEyOCBodHRwcwo4NS4xMzMuMTY5LjQ1OjgxMTggaHR0cAo4Ny4xMDcuMTA5LjI1NDoyMTgwIHNvY2tzNAo4Ny4xMDcuMTg0LjE4Mjo4MDgwIGh0dHBzCjg3LjEwNy41NC4xNTU6MTA4MDggc29ja3M0Cjg3LjEwNy42OC4yMzE6MTA4MSBzb2NrczQKODguMTM1LjM2LjI0NjoxMDgwIHNvY2tzNQo4OS4yMTkuMTkyLjIwOTo4MDgwIGh0dHAKODkuNDQuMjQxLjk4OjEwODAgc29ja3M0Cjg5LjQ2LjIxOS4xMzA6ODA4MCBodHRwCjg5LjQ2LjIxOS4xMzM6ODAgaHR0cHMKOTMuMTE4LjEwOS4yMjA6ODA4MCBodHRwCjkzLjExOC4xMjAuNjA6ODA4MCBodHRwCjkzLjExOC4xMjAuNjA6ODA4MCBodHRwcwo5NC4xODIuMTc3LjkyOjgwIGh0dHAKOTQuMTgzLjYuMjI2OjkwOTAgaHR0cHM=" | base64 -d > proxies.txt
+          set -x
+          for p in 1 2 3 4 5; do
+            curl -s --max-time 20 "https://proxylist.geonode.com/api/proxy-list?country=IR&limit=100&page=$p&socks=false" -H "User-Agent: Mozilla/5.0" >> gn.json
+            echo >> gn.json
+          done
+          curl -s --max-time 20 "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&country=ir&proxy_format=protocolipport&format=text&ports=8080,3128,1080,80,8118,9050" > ps.txt
+          python3 - <<'PY'
+          import json, re
+          cands = set()
+          for chunk in open("gn.json").read().split("}{"):
+              try:
+                  ip = re.search(r'"ip":"([^"]+)"', chunk).group(1)
+                  port = re.search(r'"port":"?(\d+)"?', chunk).group(1)
+                  proto = "http"
+                  if '"socks5"' in chunk: proto = "socks5"
+                  elif '"socks4"' in chunk: proto = "socks4"
+                  cands.add((ip, port, proto))
+              except Exception:
+                  pass
+          for line in open("ps.txt"):
+              line = line.strip()
+              if "://" in line:
+                  proto, rest = line.split("://", 1)
+                  ip, port = rest.rsplit(":", 1)
+                  cands.add((ip, port, proto))
+          lines = [f"{ip}:{port} {proto}" for ip, port, proto in sorted(cands)]
+          open("proxies.txt", "w").write("\n".join(lines))
+          print("candidates:", len(lines))
+          PY
           wc -l proxies.txt
-          cat proxies.txt | xargs -P 10 -I{} sh -c '
+          cat proxies.txt | xargs -P 12 -I{} sh -c '
             line="{}"; proto="${line##* }"; hostport="${line% *}";
             case "$proto" in
               socks5) xurl="socks5h://$hostport";;
               socks4) xurl="socks4a://$hostport";;
               *) xurl="http://$hostport";;
             esac
-            body=$(curl -s --max-time 15 -x "$xurl" https://kashano.ir 2>/dev/null)
-            code=$?
-            size=${#body}
-            if [ $code -eq 0 ] && echo "$body" | grep -q "داخل کشور"; then
-              mark="BLOCKED_IP";
-            elif [ $code -eq 0 ] && [ $size -gt 3000 ]; then
-              mark="REAL_PAGE";
-            elif [ $code -eq 0 ]; then
-              mark="SMALL($size)";
+            code=$(curl -s -o /tmp/b.$$ -w "%{http_code}" --max-time 12 -x "$xurl" https://kashano.ir 2>/dev/null)
+            size=$(stat -c%s /tmp/b.$$ 2>/dev/null || echo 0)
+            rm -f /tmp/b.$$
+            if [ "$code" = "200" ] && [ "$size" -gt 1000 ]; then
+              echo "WORKS | $proto $hostport"
             else
-              mark="FAIL($code)";
+              echo "dead($code,$size) | $proto $hostport"
             fi
-            echo "$mark | $proto $hostport"
           ' | sort | tee results.txt
-          echo "=== SUMMARY ==="
-          echo "REAL_PAGE count: $(grep -c REAL_PAGE results.txt)"
-          grep "REAL_PAGE" results.txt || echo "no real page"
+          echo "=== WORKING ==="
+          grep -c "^WORKS" results.txt || true
+          grep "^WORKS" results.txt || true
