@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
-"""اجرای در runner گیت‌هاب: ورود به کاشانو + استخراج فایلینگ."""
+"""اجرای در runner گیت‌هاب: ورود به کاشانو + استخراج فایلینگ. نسخهٔ ۴ — دیباگ پیامک."""
 import os, re, time, base64, json, subprocess, urllib.request, urllib.error
 from pathlib import Path
 
 PHONE = "09201231249"
-PIN = "88047108"          # PIN احتمالی حساب (اول امتحان می‌شود)
 REPO = os.environ.get("GITHUB_REPOSITORY", "")
 TOK = os.environ.get("GITHUB_TOKEN", "")
 OTP_BRANCH = "kashano-otp"
@@ -13,6 +12,7 @@ OUT_BRANCH = "kashano-out"
 OUT_DIR = Path("kashano_out")
 OUT_DIR.mkdir(exist_ok=True)
 PHONE_RE = re.compile(r"(?<!\d)(?:\+?98|0)?9\d{9}(?!\d)")
+RESEND_RE = re.compile(r"(ارسال|دوباره|مجدد|retry|resend|again)", re.I)
 
 
 def log(m):
@@ -48,21 +48,145 @@ def api(url, method="GET", payload=None):
         return e.code, json.loads(e.read().decode() or "{}")
 
 
-def read_otp_file(timeout_s=720, first_wait=20):
-    """کدِ تازه را از فایلِ مخزن می‌خواند (تا timeout)."""
-    deadline = time.time() + timeout_s
-    waited = 0
-    while time.time() < deadline:
-        st, res = api(f"/repos/{REPO}/contents/{OTP_PATH}?ref={OTP_BRANCH}")
-        if st == 200 and res.get("content"):
-            code = base64.b64decode(res["content"]).decode().strip()
-            log(f"کد از فایل خوانده شد ({len(code)} رقم)")
-            return code
-        waited += 8
-        if waited <= first_wait:
-            log(f"صبر برای کدِ تازه از کاربر... ({waited}s)")
-        time.sleep(8)
-    return None
+def push_out(tag=""):
+    """کامیتِ کاملِ درخت کاری (شامل kashano_out) + push به شاخهٔ خروجی."""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+
+    def g(*a):
+        r = subprocess.run(["git", *a], check=False, env=env, capture_output=True, text=True)
+        return r
+
+    g("config", "user.email", "ci@k.local")
+    g("config", "user.name", "ci")
+    g("add", "-A")
+    c = g("commit", "-m", f"kashano out {tag}", "--allow-empty", "-q")
+    if c.returncode != 0:
+        log("خطای commit:", c.stderr[:200])
+    url = f"https://x-access-token:{TOK}@github.com/{REPO}.git"
+    p = g("push", "-f", url, f"HEAD:{OUT_BRANCH}")
+    if p.returncode != 0:
+        log("خطای push:", p.stderr[:300])
+    else:
+        log(f"خروجی push شد به شاخهٔ {OUT_BRANCH} ({tag})")
+
+
+def capture_diag(page, tag):
+    """متن + اسکرین‌شات + HTML صفحه را برای عیب‌یابی می‌نویسد."""
+    try:
+        txt = page.inner_text("body")
+    except Exception:
+        txt = "(خواندن متن ممکن نبود)"
+    try:
+        url = page.url
+    except Exception:
+        url = "?"
+    (OUT_DIR / f"diag{tag}.txt").write_text(f"URL: {url}\n\n{txt}", encoding="utf-8")
+    try:
+        page.screenshot(path=str(OUT_DIR / f"diag{tag}.png"), full_page=True)
+    except Exception:
+        pass
+    try:
+        (OUT_DIR / f"diag{tag}.html").write_text(page.content(), encoding="utf-8")
+    except Exception:
+        pass
+    log(f"diag{tag} ثبت شد — {len(txt)} کاراکتر متن")
+    return txt
+
+
+def try_resend(page, tag=""):
+    """دکمهٔ «ارسال مجدد کد» را پیدا می‌کند و کلیک می‌کند."""
+    txt = capture_diag(page, f"_before{tag}")
+    clicked = False
+    for sel in ("button", "a", "span", "div"):
+        if clicked:
+            break
+        try:
+            els = page.locator(f"{sel}:visible")
+            n = els.count()
+        except Exception:
+            continue
+        for i in range(n):
+            el = els.nth(i)
+            try:
+                t = (el.inner_text(timeout=500) or "").strip()
+            except Exception:
+                continue
+            t2 = " ".join(t.split())
+            if not (3 <= len(t2) <= 70):
+                continue
+            if RESEND_RE.search(t2) and ("کد" in t2 or "تأیید" in t2 or "تایید" in t2
+                                         or "resend" in t2.lower() or "retry" in t2.lower()
+                                         or "دوباره" in t2 or "مجدد" in t2):
+                try:
+                    el.scroll_into_view_if_needed()
+                    el.click(timeout=4000)
+                    clicked = True
+                    log(f"✅ دکمهٔ resend کلیک شد: «{t2[:50]}»")
+                    break
+                except Exception as e:
+                    log(f"کلیک resend خطا ({t2[:30]}): {type(e).__name__}")
+    time.sleep(5)
+    after = capture_diag(page, f"_after{tag}")
+    if clicked:
+        # آیا پیام «ارسال شد» یا شمارش معکوس آمده؟
+        tail = after[-400:].replace("\n", " | ")
+        log("پس از resend (پایان متن):", tail[:300])
+    else:
+        log("دکمهٔ resend پیدا نشد — متن صفحه در diag ثبت شد")
+    return clicked
+
+
+def submit_code(page, code, tag=""):
+    page.screenshot(path=str(OUT_DIR / f"code_page{tag}.png"))
+    (OUT_DIR / f"code_page{tag}.html").write_text(page.content(), encoding="utf-8")
+    try:
+        page.wait_for_selector("input:visible", timeout=35000)
+    except Exception:
+        log(f"فیلد کد پیدا نشد{tag}")
+        return False
+    time.sleep(1)
+    ins = page.locator("input:visible")
+    n = ins.count()
+    log(f"{n} فیلدِ ورودی در صفحهٔ کد{tag}")
+    if n == 0:
+        return False
+    try:
+        if n >= 3:
+            first = ins.first
+            first.click()
+            for ch in code:
+                first.type(ch, delay=150)
+        else:
+            target = ins.nth(n - 1)
+            target.click()
+            target.fill("")
+            target.type(code, delay=90)
+    except Exception as e:
+        log(f"نویسندگی کد خطا: {type(e).__name__}: {str(e)[:100]}")
+        return False
+    time.sleep(1)
+    clicked = False
+    for nm in ("تأیید", "ورود", "ادامه", "تأیید کد", "Verify", "Confirm"):
+        b = page.get_by_role("button", name=nm)
+        if b.count():
+            try:
+                b.first.click()
+                clicked = True
+                break
+            except Exception:
+                pass
+    if not clicked:
+        page.keyboard.press("Enter")
+    time.sleep(15)
+    page.screenshot(path=str(OUT_DIR / f"after_code{tag}.png"))
+    (OUT_DIR / f"after_code{tag}.html").write_text(page.content(), encoding="utf-8")
+    try:
+        still = "signin" in page.url.lower() or "sign-in" in page.url.lower()
+    except Exception:
+        still = True
+    log(f"URL بعد از ارسال کد{tag}: {page.url}")
+    return not still
 
 
 def collect_rows(page):
@@ -101,62 +225,6 @@ def collect_rows(page):
     return rows
 
 
-def submit_code(page, code, tag=""):
-    page.screenshot(path=str(OUT_DIR / f"code_page{tag}.png"))
-    (OUT_DIR / f"code_page{tag}.html").write_text(page.content(), encoding="utf-8")
-    try:
-        page.wait_for_selector("input:visible", timeout=35000)
-    except Exception:
-        log(f"فیلد کد پیدا نشد{tag} — احتمالاً صفحهٔ متفاوتی است")
-        return False
-    time.sleep(1)
-    ins = page.locator("input:visible")
-    n = ins.count()
-    log(f"{n} فیلدِ ورودی در صفحهٔ کد{tag}")
-    if n == 0:
-        return False
-    try:
-        if n >= 3:
-            # جعبه‌های OTP (هر رقم یک فیلد) — در اولی بنویس؛ خودکار جلو می‌رود
-            first = ins.first
-            first.click()
-            for ch in code:
-                first.type(ch, delay=150)
-        else:
-            target = ins.nth(n - 1)
-            target.click(); target.fill("")
-            target.type(code, delay=90)
-    except Exception as e:
-        log(f"نویسندگی کد خطا: {type(e).__name__}: {str(e)[:100]}")
-        return False
-    time.sleep(1)
-    clicked = False
-    for nm in ("تأیید", "ورود", "ادامه", "تأیید کد", "Verify", "Confirm"):
-        b = page.get_by_role("button", name=nm)
-        if b.count():
-            try:
-                b.first.click(); clicked = True; break
-            except Exception:
-                pass
-    if not clicked:
-        page.keyboard.press("Enter")
-    time.sleep(15)
-    page.screenshot(path=str(OUT_DIR / f"after_code{tag}.png"))
-    (OUT_DIR / f"after_code{tag}.html").write_text(page.content(), encoding="utf-8")
-    return "signin" not in page.url.lower() and "sign-in" not in page.url.lower()
-
-
-def push_out():
-    env = dict(os.environ)
-    env["GIT_TERMINAL_PROMPT"] = "0"
-    def g(*a):
-        subprocess.run(["git", *a], check=False, env=env, capture_output=True)
-    g("config", "user.email", "ci@k.local"); g("config", "user.name", "ci")
-    url = f"https://x-access-token:{TOK}@github.com/{REPO}.git"
-    g("push", "-f", url, f"HEAD:{OUT_BRANCH}")
-    log(f"خروجی push شد به شاخهٔ {OUT_BRANCH}")
-
-
 def main():
     from playwright.sync_api import sync_playwright
     UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -169,32 +237,65 @@ def main():
         page.goto("https://kashano.ir/signin", wait_until="domcontentloaded", timeout=60000)
         page.wait_for_selector("input", timeout=30000)
         inp = page.locator("input").first
-        inp.click(); inp.fill("")
+        inp.click()
+        inp.fill("")
         inp.type(PHONE, delay=50)
         time.sleep(1)
         page.screenshot(path=str(OUT_DIR / "1_phone.png"))
         page.get_by_role("button", name="ادامه").click()
-        log("شماره فرستاده شد — منتظر کادرِ کد")
-        time.sleep(12)
+        log("شماره فرستاده شد — منتظر صفحهٔ کد")
+        time.sleep(15)
 
-        ok = submit_code(page, PIN, tag="")
-        log(f"تلاشِ PIN: {ok}")
+        # صفحهٔ کد: دیباگ + دکمهٔ ارسال مجدد + push اولیه
+        capture_diag(page, "_codepage")
+        try_resend(page, "_1")
+        push_out("_early")
+
+        # صبر برای کد از کاربر (با تلاش resend هر ۲/۵ دقیقه)
+        code = None
+        deadline = time.time() + 900
+        last_resend = time.time()
+        waited = 0
+        while time.time() < deadline:
+            st, res = api(f"/repos/{REPO}/contents/{OTP_PATH}?ref={OTP_BRANCH}")
+            if st == 200 and res.get("content"):
+                code = base64.b64decode(res["content"]).decode().strip()
+                log(f"✅ کد از فایل خوانده شد ({len(code)} رقم)")
+                break
+            waited += 8
+            if waited <= 60 and waited % 24 == 0:
+                log(f"صبر برای کدِ کاربر... ({waited}s)")
+            if time.time() - last_resend > 150:
+                last_resend = time.time()
+                log("تلاش resend دوباره...")
+                try_resend(page, "_loop")
+            time.sleep(8)
+
+        if not code:
+            (OUT_DIR / "STATUS").write_text("NO_SMS_RECEIVED")
+            log("❌ کدی نرسید — STATUS=NO_SMS_RECEIVED")
+            push_out("_nosms")
+            browser.close()
+            return
+
+        ok = submit_code(page, code, tag="")
+        log(f"تلاشِ کدِ تازه: {ok}")
         if not ok:
-            code = read_otp_file()
-            if code:
-                ok = submit_code(page, code, tag="_2")
-                log(f"تلاشِ کدِ تازه: {ok}")
-            if not ok:
-                (OUT_DIR / "STATUS").write_text("NEEDS_CODE_RETRY")
-                log("❌ ورود موفق نبود — STATUS=NEEDS_CODE_RETRY")
-                push_out(); browser.close(); return
+            (OUT_DIR / "STATUS").write_text("BAD_CODE")
+            push_out("_badcode")
+            browser.close()
+            return
+
         log("✅ وارد شدیم!")
+        capture_diag(page, "_loggedin")
 
         # فایلینگ
         for sel in ("فایلینگ", "فایلینگ املاک", "فایل‌های من"):
             loc = page.get_by_text(sel, exact=False)
             if loc.count():
-                loc.first.click(); time.sleep(6); break
+                loc.first.click()
+                time.sleep(6)
+                break
         else:
             for u in ("https://kashano.ir/filings", "https://kashano.ir/filing",
                       "https://kashano.ir/my-filings", "https://kashano.ir/dashboard"):
@@ -207,18 +308,21 @@ def main():
         page.screenshot(path=str(OUT_DIR / "4_filing.png"))
         (OUT_DIR / "4_filing.html").write_text(page.content(), encoding="utf-8")
         log("صفحهٔ فایلینگ:", page.url)
+        push_out("_filing")
 
         seen, order = {}, []
         for pn in range(1, 41):
             log(f"صفحهٔ {pn}...")
             for r in collect_rows(page):
                 if r["phone"] and r["phone"] not in seen:
-                    seen[r["phone"]] = r; order.append(r["phone"])
+                    seen[r["phone"]] = r
+                    order.append(r["phone"])
             nxt = None
             for nm in ("بعدی", "Next"):
                 b = page.get_by_role("button", name=nm)
                 if b.count() and b.first.is_enabled():
-                    nxt = b.first; break
+                    nxt = b.first
+                    break
             if not nxt:
                 break
             try:
@@ -237,14 +341,15 @@ def main():
             for it in items:
                 w.writerow([it["name"], it["phone"], it["address"]])
         from openpyxl import Workbook
-        wb = Workbook(); ws = wb.active
+        wb = Workbook()
+        ws = wb.active
         ws.append(["نام", "شماره", "آدرس"])
         for it in items:
             ws.append([it["name"], it["phone"], it["address"]])
         wb.save(OUT_DIR / "kashano_owners.xlsx")
         (OUT_DIR / "STATUS").write_text(f"DONE:{len(items)}")
         log(f"✅ DONE: {len(items)} مالک")
-        push_out()
+        push_out("_done")
         browser.close()
 
 
@@ -257,7 +362,7 @@ if __name__ == "__main__":
         traceback.print_exc()
         try:
             (OUT_DIR / "STATUS").write_text(f"CRASH:{type(e).__name__}:{str(e)[:120]}")
-            push_out()
+            push_out("_crash")
         except Exception as e2:
             log("push خطا هم نشد:", e2)
         raise
