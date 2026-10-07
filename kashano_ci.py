@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """کاشانو v7: ورود + احراز IP دفتر املاک (کد امنیتی + کد پیامکی) + استخراج فایلینگ."""
 import os, re, time, base64, json, random, subprocess, urllib.request, urllib.error
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 PHONE = "09201231249"
@@ -53,6 +54,80 @@ def api(url, method="GET", payload=None):
             return r.status, json.loads(r.read().decode() or "{}")
     except urllib.error.HTTPError as e:
         return e.code, json.loads(e.read().decode() or "{}")
+
+
+def fetch_fresh_proxies():
+    """فهرش تازهٔ پروکسی‌های ایرانی (geonode + proxyscrape)."""
+    proxs = []
+    try:
+        for pageno in (1, 2, 3):
+            req = urllib.request.Request(
+                f"https://proxylist.geonode.com/api/proxy-list?country=IR&limit=100&page={pageno}&socks=false",
+                headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=25) as r:
+                d = json.loads(r.read().decode())
+            for it in d.get("data", []):
+                protos = it.get("protocols") or ["http"]
+                proto = "socks5" if "socks5" in protos else ("socks4" if "socks4" in protos else "http")
+                if it.get("ip") and it.get("port"):
+                    proxs.append((it["ip"], str(it["port"]), proto))
+    except Exception as e:
+        log("geonode خطا:", type(e).__name__)
+    try:
+        req = urllib.request.Request(
+            "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&country=ir"
+            "&proxy_format=protocolipport&format=text&ports=8080,3128,1080,80,8118,9050",
+            headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=25) as r:
+            for line in r.read().decode().splitlines():
+                line = line.strip()
+                if "://" in line:
+                    proto, rest = line.split("://", 1)
+                    ip, port = rest.rsplit(":", 1)
+                    proxs.append((ip, port, proto))
+    except Exception as e:
+        log("proxyscrape خطا:", type(e).__name__)
+    seen, uniq = set(), []
+    for ip, port, proto in proxs:
+        k = (ip, port, proto)
+        if k not in seen:
+            seen.add(k)
+            uniq.append(k)
+    log(f"{len(uniq)} پروکسیِ تازه جمع شد")
+    return uniq
+
+
+def proxy_url(ip, port, proto):
+    if proto == "socks5":
+        return f"socks5h://{ip}:{port}"
+    if proto == "socks4":
+        return f"socks4a://{ip}:{port}"
+    return f"http://{ip}:{port}"
+
+
+def test_proxy(ux, timeout=10):
+    r = subprocess.run(
+        ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", str(timeout),
+         "-x", ux, "https://kashano.ir/signin"],
+        capture_output=True, text=True)
+    return r.stdout.strip() == "200"
+
+
+def pick_working_proxies(limit=15):
+    """فهرش تازه + تست موازی → پروکسی‌های زنده."""
+    uniq = fetch_fresh_proxies()
+    urls = [proxy_url(ip, port, proto) for ip, port, proto in uniq]
+    for px in PROXIES:
+        if px not in urls:
+            urls.append(px)
+    alive = []
+    with ThreadPoolExecutor(max_workers=15) as ex:
+        for ux, ok in zip(urls, ex.map(test_proxy, urls)):
+            if ok:
+                alive.append(ux)
+                log(f"  زنده: {ux}")
+    log(f"{len(alive)} پروکسی زنده از {len(urls)}")
+    return alive[:limit]
 
 
 def push_out(tag=""):
@@ -308,163 +383,126 @@ def main():
                     pass
             return None, None
 
+    def attempt_login(browser, px, tag):
+        """یک تلاش کاملِ ورود با یک پروکسی. (ctx, page) برمی‌گرداند یا None."""
+        log(f"── تلاش {tag} با پروکسی: {px or 'مستقیم'}")
+        c = None
+        try:
+            kw = dict(user_agent=UA, locale="fa-IR", viewport={"width": 1366, "height": 900})
+            if px:
+                kw["proxy"] = {"server": px}
+            c = browser.new_context(**kw)
+            p = c.new_page()
+            p.goto("https://kashano.ir/signin", wait_until="domcontentloaded", timeout=60000)
+            time.sleep(10)
+            if is_blocked(p):
+                log("  ❌ بلاک IP در صفحهٔ ورود")
+                c.close()
+                return None
+            if p.locator("input:visible").count() == 0:
+                log("  ؟ فیلدی پیدا نشد")
+                c.close()
+                return None
+            log("  ✅ صفحهٔ واقعیِ signin")
+            inp = p.locator("input:visible").first
+            inp.click()
+            inp.fill("")
+            inp.type(PHONE, delay=50)
+            time.sleep(1)
+            p.get_by_role("button", name="ادامه").click()
+            log("  شماره فرستاده شد")
+            time.sleep(15)
+            if is_blocked(p):
+                log("  ❌ بلاک IP پس از ارسال شماره (پروکسی بیرون افتاد)")
+                capture_diag(p, f"_blocked{tag}")
+                c.close()
+                return None
+            capture_diag(p, f"_step2{tag}")
+            body2 = p.inner_text("body")
+            if "رمز عبور" not in body2:
+                log("  ؟ مرحلهٔ ۲ رمز عبور نبود")
+                capture_diag(p, f"_unexpected{tag}")
+                c.close()
+                return None
+            log(f"  مرحلهٔ رمز — {PIN} را وارد می‌کنم")
+            enter_password(p, PIN)
+            body3 = p.inner_text("body")
+            capture_diag(p, f"_afterpw{tag}")
+            if "احراز IP" not in body3 and "دفتر املاک" not in body3:
+                log("  ❌ صفحهٔ احراز دفتر نیامد")
+                c.close()
+                return None
+            log("  صفحهٔ احراز IP دفتر — درخواست پیامک کد تایید")
+            for loc in (p.get_by_role("button", name="درخواست پیامک"),
+                        p.get_by_text("درخواست پیامک"),
+                        p.get_by_text("درخواست کد")):
+                if loc.count():
+                    try:
+                        loc.first.click()
+                        break
+                    except Exception:
+                        pass
+            time.sleep(10)
+            capture_diag(p, f"_sms_requested{tag}")
+            push_out(f"_sms{tag}")
+            log("  پیامک درخواست شد — منتظر کدها از کاربر")
+            codes = wait_user_codes(p, timeout_s=1200)
+            if not codes:
+                log("  کدی نرسید")
+                c.close()
+                return None
+            sec, sms = codes
+            enter_office_codes(p, sec, sms)
+            capture_diag(p, f"_afteroffice{tag}")
+            push_out(f"_office{tag}")
+            if login_ok(p):
+                log(f"  ✅✅ وارد شدیم (تلاش {tag})")
+                return (c, p)
+            log("  تلاش اول احراز جواب نداد — ۴ دقیقه منتظر کد تازه")
+            codes2 = wait_user_codes(p, timeout_s=240)
+            if codes2:
+                sec, sms = codes2
+                enter_office_codes(p, sec, sms)
+                capture_diag(p, f"_afteroffice2{tag}")
+                push_out(f"_office2{tag}")
+                if login_ok(p):
+                    log(f"  ✅✅ وارد شدیم (تلاش {tag}، کد دوم)")
+                    return (c, p)
+            log("  ❌ ورود با این پروکسی به نتیجه نرسید")
+            c.close()
+            return None
+        except Exception as e:
+            log(f"  خطا در تلاش {tag}: {type(e).__name__}: {str(e)[:150]}")
+            if c:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            return None
+
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
         ctx = page = None
-        for px in PROXIES + [None]:
-            ctx, page = try_signin(browser, px)
-            if ctx:
+        fresh = pick_working_proxies(limit=12)
+        pool = fresh if fresh else PROXIES
+        log(f"استخر پروکسی: {len(pool)}")
+        attempts = []
+        for rnd in range(3):
+            for i, px in enumerate(pool):
+                attempts.append((px, f"r{rnd}p{i}"))
+        for px, tag in attempts:
+            res = attempt_login(browser, px, tag)
+            if res:
+                ctx, page = res
                 break
+            time.sleep(8)
         if not ctx:
-            (OUT_DIR / "STATUS").write_text("ALL_PROXIES_BLOCKED")
-            push_out("_allblocked")
+            (OUT_DIR / "STATUS").write_text("ALL_PROXIES_FAILED")
+            log("❌ هیچ تلاشی به نتیجه نرسید")
+            push_out("_allfailed")
             browser.close()
             return
 
-        inp = page.locator("input:visible").first
-        inp.click()
-        inp.fill("")
-        inp.type(PHONE, delay=50)
-        time.sleep(1)
-        page.get_by_role("button", name="ادامه").click()
-        log("شماره فرستاده شد")
-        time.sleep(15)
-
-        if is_blocked(page):
-            (OUT_DIR / "STATUS").write_text("BLOCKED_AFTER_SUBMIT")
-            capture_diag(page, "_blocked")
-            push_out("_blocked")
-            browser.close()
-            return
-
-        capture_diag(page, "_step2")
-        push_out("_step2")
-        body2 = page.inner_text("body")
-        log("مرحلهٔ ۲:", " ".join(body2.split())[:150])
-
-        logged = False
-        if "رمز عبور" in body2:
-            log(f"مرحلهٔ رمز عبور — {PIN} را وارد می‌کنم")
-            enter_password(page, PIN)
-            capture_diag(page, "_afterpw")
-            push_out("_afterpw")
-            body3 = page.inner_text("body")
-
-            if "احراز IP" in body3 or "دفتر املاک" in body3:
-                # --- احراز IP دفتر املاک ---
-                log("صفحهٔ احراز IP دفتر — درخواست پیامک کد تایید")
-                clicked_req = False
-                for loc in (page.get_by_role("button", name="درخواست پیامک"),
-                            page.get_by_text("درخواست پیامک"),
-                            page.get_by_text("درخواست کد")):
-                    if loc.count():
-                        try:
-                            loc.first.click()
-                            clicked_req = True
-                            break
-                        except Exception:
-                            pass
-                if not clicked_req:
-                    for sel in ("button", "a", "span", "div"):
-                        for el in page.locator(f"{sel}:visible").all():
-                            try:
-                                t = " ".join((el.inner_text(timeout=300) or "").split())
-                            except Exception:
-                                continue
-                            if "درخواست" in t and ("کد" in t or "پیامک" in t):
-                                try:
-                                    el.click()
-                                    clicked_req = True
-                                    break
-                                except Exception:
-                                    pass
-                        if clicked_req:
-                            break
-                log("دکمهٔ درخواست پیامک:", "کلیک شد" if clicked_req else "پیدا نشد!")
-                time.sleep(10)
-                capture_diag(page, "_sms_requested")
-                push_out("_sms_requested")
-                log("پیامک در راه است — منتظر کدها (خط اول=کد امنیتی، خط دوم=کد پیامک)")
-                codes = wait_user_codes(page, timeout_s=1200)
-                if not codes:
-                    (OUT_DIR / "STATUS").write_text("NO_SMS_RECEIVED")
-                    push_out("_nosms")
-                    browser.close()
-                    return
-                sec, sms = codes
-                enter_office_codes(page, sec, sms)
-                capture_diag(page, "_afteroffice")
-                push_out("_afteroffice")
-                logged = login_ok(page)
-                if not logged:
-                    log("تلاش اول احراز دفتر جواب نداد — ۵ دقیقه منتظر کد تازه")
-                    codes2 = wait_user_codes(page, timeout_s=300)
-                    if codes2:
-                        sec, sms = codes2
-                        enter_office_codes(page, sec, sms)
-                        capture_diag(page, "_afteroffice2")
-                        push_out("_afteroffice2")
-                        logged = login_ok(page)
-            elif "رمز عبور" in body3:
-                # رمز اشتباه بود — مسیر فراموشی رمز
-                log("رمز قبلی اشتباه — مسیر فراموشی رمز")
-                f = page.get_by_text("فراموش کرده", exact=False)
-                if f.count():
-                    f.first.click()
-                    time.sleep(10)
-                capture_diag(page, "_forgot")
-                push_out("_forgot")
-                codes = wait_user_codes(page, timeout_s=900)
-                if not codes:
-                    (OUT_DIR / "STATUS").write_text("NO_SMS_RECEIVED")
-                    push_out("_nosms")
-                    browser.close()
-                    return
-                _, sms = codes
-                enter_office_codes(page, "", sms)
-                capture_diag(page, "_afterreset")
-                push_out("_afterreset")
-                body_r = page.inner_text("body")
-                if "رمز جدید" in body_r or "تکرار" in body_r:
-                    newpass = "Kashano" + "".join(random.choice("23456789") for _ in range(6)) + "!"
-                    ins = page.locator("input:visible")
-                    for i in range(min(ins.count(), 2)):
-                        ins.nth(i).click()
-                        ins.nth(i).fill("")
-                        ins.nth(i).type(newpass, delay=60)
-                    for nm in ("ثبت", "ذخیره", "ادامه", "تأیید"):
-                        b = page.get_by_role("button", name=nm)
-                        if b.count():
-                            try:
-                                b.first.click()
-                                break
-                            except Exception:
-                                pass
-                    else:
-                        page.keyboard.press("Enter")
-                    time.sleep(12)
-                    capture_diag(page, "_afternewpw")
-                    push_out("_afternewpw")
-                    if not login_ok(page):
-                        enter_password(page, newpass)
-                        time.sleep(8)
-                    (OUT_DIR / "NEW_PASSWORD.txt").write_text(newpass, encoding="utf-8")
-                    logged = login_ok(page)
-                else:
-                    logged = login_ok(page)
-            else:
-                logged = login_ok(page)
-        else:
-            logged = login_ok(page)
-
-        if not logged:
-            (OUT_DIR / "STATUS").write_text("LOGIN_FAILED")
-            capture_diag(page, "_finalfail")
-            push_out("_loginfail")
-            browser.close()
-            return
-
-        log("✅ وارد شدیم!")
         capture_diag(page, "_loggedin")
 
         # فایلینگ
