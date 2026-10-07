@@ -6,54 +6,56 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: collect and test IR proxies
+      - name: find working proxy
+        id: findpx
         run: |
-          set -x
-          for p in 1 2 3 4 5; do
+          for p in 1 2 3; do
             curl -s --max-time 20 "https://proxylist.geonode.com/api/proxy-list?country=IR&limit=100&page=$p&socks=false" -H "User-Agent: Mozilla/5.0" >> gn.json
             echo >> gn.json
           done
-          curl -s --max-time 20 "https://api.proxyscrape.com/v4/free-proxy-list/get?request=displayproxies&country=ir&proxy_format=protocolipport&format=text&ports=8080,3128,1080,80,8118,9050" > ps.txt
           python3 - <<'PY'
           import json, re
           cands = set()
-          for chunk in open("gn.json").read().split("}{"):
+          for chunk in open("gn.json", errors="ignore").read().split("},{"):
               try:
                   ip = re.search(r'"ip":"([^"]+)"', chunk).group(1)
                   port = re.search(r'"port":"?(\d+)"?', chunk).group(1)
-                  proto = "http"
-                  if '"socks5"' in chunk: proto = "socks5"
-                  elif '"socks4"' in chunk: proto = "socks4"
+                  proto = "socks5" if '"socks5"' in chunk else "http"
                   cands.add((ip, port, proto))
               except Exception:
                   pass
-          for line in open("ps.txt"):
-              line = line.strip()
-              if "://" in line:
-                  proto, rest = line.split("://", 1)
-                  ip, port = rest.rsplit(":", 1)
-                  cands.add((ip, port, proto))
           lines = [f"{ip}:{port} {proto}" for ip, port, proto in sorted(cands)]
           open("proxies.txt", "w").write("\n".join(lines))
           print("candidates:", len(lines))
           PY
-          wc -l proxies.txt
-          cat proxies.txt | xargs -P 12 -I{} sh -c '
+          WORKING=$(cat proxies.txt | xargs -P 12 -I{} sh -c '
             line="{}"; proto="${line##* }"; hostport="${line% *}";
-            case "$proto" in
-              socks5) xurl="socks5h://$hostport";;
-              socks4) xurl="socks4a://$hostport";;
-              *) xurl="http://$hostport";;
-            esac
-            code=$(curl -s -o /tmp/b.$$ -w "%{http_code}" --max-time 12 -x "$xurl" https://kashano.ir 2>/dev/null)
-            size=$(stat -c%s /tmp/b.$$ 2>/dev/null || echo 0)
-            rm -f /tmp/b.$$
-            if [ "$code" = "200" ] && [ "$size" -gt 1000 ]; then
-              echo "WORKS | $proto $hostport"
-            else
-              echo "dead($code,$size) | $proto $hostport"
-            fi
-          ' | sort | tee results.txt
-          echo "=== WORKING ==="
-          grep -c "^WORKS" results.txt || true
-          grep "^WORKS" results.txt || true
+            case "$proto" in socks5) xurl="socks5h://$hostport";; *) xurl="http://$hostport";; esac
+            code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 -x "$xurl" https://kashano.ir/ 2>/dev/null)
+            [ "$code" = "200" ] && echo "$xurl"
+          ' | head -5)
+          echo "working:"; echo "$WORKING"
+          echo "FIRST_PROXY=$(echo "$WORKING" | head -1)" >> "$GITHUB_OUTPUT"
+      - name: fetch faq pages
+        run: |
+          PX="${{ steps.findpx.outputs.FIRST_PROXY }}"
+          echo "using proxy: $PX"
+          for u in "https://kashano.ir/" "https://kashano.ir/faq" "https://kashano.ir/help" "https://kashano.ir/contact-us"; do
+            echo "===== $u ====="
+            curl -s --max-time 25 -x "$PX" "$u" | python3 -c '
+          import sys, re, html
+          t = sys.stdin.read()
+          t = re.sub(r"<script.*?</script>", " ", t, flags=re.S)
+          t = re.sub(r"<style.*?</style>", " ", t, flags=re.S)
+          t = re.sub(r"<[^>]+>", " ", t)
+          t = html.unescape(t)
+          t = " ".join(t.split())
+          print(t[:4000])
+          for m in re.finditer(r".{0,200}کد امنیتی.{0,200}", t):
+              print("### پیدا شد:", m.group(0))
+          for m in re.finditer(r".{0,200}(احراز IP|دفتر املاک|کد تایید).{0,200}", t):
+              print("### مرتبط:", m.group(0))
+          '
+            # لینک‌های FAQ از صفحهٔ اصلی
+            curl -s --max-time 25 -x "$PX" "https://kashano.ir/" | grep -oE 'href="[^"]*(faq|help|question|سوال)[^"]*"' | sort -u
+          done
