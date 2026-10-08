@@ -380,13 +380,25 @@ def busy_check():
 
 
 def try_support_form(p):
-    """یک‌بار: درخواست ریست کد امنیتی از طریق فرم تماس کاشانو."""
-    try:
-        st, f = api(f"/repos/{REPO}/contents/kashano_out/support_done.txt?ref={OUT_BRANCH}")
-        if st == 200:
-            return
-    except Exception:
-        pass
+    """یک‌بار: درخواست ریست کد امنیتی از طریق فرم تماس کاشانو (با CAPTCHA)."""
+    def _read_flag(name):
+        try:
+            st, f = api(f"/repos/{REPO}/contents/kashano_out/{name}?ref={OUT_BRANCH}")
+            if st == 200 and f.get("content"):
+                return base64.b64decode(f["content"]).decode().strip()
+        except Exception:
+            pass
+        return None
+    if _read_flag("support_done.txt"):
+        return
+    failed = _read_flag("support_failed.txt")
+    if failed:
+        try:
+            from datetime import datetime as _dt
+            if time.time() - _dt.fromisoformat(failed.split(" ")[0].replace("Z", "+00:00")).timestamp() < 7200:
+                return  # کمتر از ۲ ساعت پیش شکست خورده — اسپم نکن
+        except Exception:
+            pass
     try:
         p.goto("https://kashano.ir/contact-us", wait_until="domcontentloaded", timeout=45000)
         time.sleep(6)
@@ -396,44 +408,96 @@ def try_support_form(p):
             return
         msg = ("سلام. من مالک حساب کاشانو با شمارهٔ 09201231249 هستم. برای ورود از بیرون دفتر، "
                "سایت کد امنیتی «احراز IP دفتر املاک» می‌خواهد که در دسترس من نیست. "
-               "لطفاً کد امنیتی را برای این شماره ارسال کنید یا آن را ریست/غیرفعال کنید. با تشکر")
-        ins = p.locator("input:visible")
-        for i in range(ins.count()):
-            el = ins.nth(i)
+               "لطفاً کد امنیتی را برای همین شماره ارسال کنید یا آن را ریست/غیرفعال کنید. با تشکر")
+        # فیلدها به ترتیب: نام / موبایل / ایمیل / پیام / کد امنیتی
+        inp = p.locator("input:visible")
+        for i in range(inp.count()):
+            el = inp.nth(i)
             try:
-                t = (el.get_attribute("type") or "").lower()
-                nm = (el.get_attribute("name") or el.get_attribute("placeholder") or "").lower()
-                if t == "tel" or "phone" in nm or "mobile" in nm or "موبایل" in nm or "تلفن" in nm or "شماره" in nm:
-                    el.fill("09201231249")
-                elif t in ("text", ""):
-                    val = (el.get_attribute("placeholder") or el.get_attribute("name") or "")
-                    if "name" in val.lower() or "نام" in val:
-                        el.fill("مالک حساب 09201231249")
-                # email را خالی می‌گذاریم (ایمیل کاربر در دست نیست)
+                ph = (el.get_attribute("placeholder") or "")
+                if "فارسی" in ph:
+                    el.fill("مالک حساب کاشانو")
+                elif "09" in ph:
+                    el.fill(PHONE)
             except Exception:
                 pass
-        ta.first.fill(msg)
+        try:
+            ta.first.fill(msg)
+        except Exception:
+            pass
+        # CAPTCHA: اول از متن صفحه، وگرنه اسکرین‌شات تصویر + خواندن از code.txt
+        code = None
+        bodyt = p.inner_text("body")
+        mcap = re.search(r"کد امنیتی\s*:?\s*([0-9A-Za-z۰-۹]{3,8})\b", bodyt)
+        if mcap:
+            code = mcap.group(1).translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
+            log(f"  کد CAPTCHA از متن: {code}")
+        else:
+            cap_img = None
+            try:
+                imgs = p.locator("img:visible")
+                n = imgs.count()
+                for i in range(n):
+                    im = imgs.nth(i)
+                    srcattr = (im.get_attribute("src") or "").lower()
+                    alt = (im.get_attribute("alt") or "").lower()
+                    if any(k in srcattr + alt for k in ("captcha", "code", "verify", "کد", "recaptcha")):
+                        cap_img = im
+                        break
+                if cap_img is None and n:
+                    # آخرین تصویرِ کوچکِ صفحه معمولاً captcha است
+                    cap_img = imgs.nth(n - 1)
+            except Exception:
+                pass
+            if cap_img is not None:
+                try:
+                    cap_img.screenshot(path=str(OUT_DIR / "captcha.png"))
+                    push_out("_captcha")
+                    log("  تصویر CAPTCHA ثبت شد — ۱۰ دقیقه منتظر خواندن کد")
+                    deadline = time.time() + 600
+                    while time.time() < deadline:
+                        st, res = api(f"/repos/{REPO}/contents/{OTP_PATH}?ref={OTP_BRANCH}")
+                        if st == 200 and res.get("content"):
+                            code = base64.b64decode(res["content"]).decode().strip()
+                            try:
+                                api(f"/repos/{REPO}/contents/{OTP_PATH}?ref={OTP_BRANCH}",
+                                    method="DELETE", payload={"sha": res["sha"], "message": "consumed"})
+                            except Exception:
+                                pass
+                            break
+                        time.sleep(8)
+                except Exception as e:
+                    log("  خطای captcha:", type(e).__name__)
+        # فیلد کد امنیتی: آخرین inputِ text
+        if code:
+            for i in range(inp.count() - 1, -1, -1):
+                try:
+                    el = inp.nth(i)
+                    if (el.get_attribute("type") or "text") == "text":
+                        el.fill(code)
+                        break
+                except Exception:
+                    pass
         time.sleep(1)
         p.screenshot(path=str(OUT_DIR / "support_form.png"), full_page=True)
         (OUT_DIR / "support_form.html").write_text(p.content(), encoding="utf-8")
+        b = p.get_by_role("button", name="ارسال")
         clicked = False
-        for nm in ("ثبت", "ارسال", "Submit", "Send"):
-            b = p.get_by_role("button", name=nm)
-            if b.count():
-                try:
-                    b.first.click()
-                    clicked = True
-                    break
-                except Exception:
-                    pass
+        if b.count():
+            try:
+                b.first.click()
+                clicked = True
+            except Exception:
+                pass
         if clicked:
-            time.sleep(8)
-            log("  ✅ فرم پشتیبانی ارسال شد")
+            time.sleep(9)
+        after = p.inner_text("body")
+        ok = ("ثبت شد" in after) or ("موفق" in after) or ("تشکر" in after) or ("دریافت" in after) or ("ارسال شد" in after)
+        log("  نتیجهٔ فرم:", "✅ ثبت شد" if ok else "❓ نامشخص — اسکرین‌شات ثبت شد")
         p.screenshot(path=str(OUT_DIR / "support_after.png"), full_page=True)
-        (OUT_DIR / "support_done.txt").write_text(
-            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()) + (" sent" if clicked else " not-clicked"))
+        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        (OUT_DIR / ("support_done.txt" if ok else "support_failed.txt")).write_text(ts)
         push_out("_support")
-        # بازگشت به صفحهٔ ورود
         p.goto("https://kashano.ir/signin", wait_until="domcontentloaded", timeout=45000)
         time.sleep(8)
     except Exception as e:
