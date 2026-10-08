@@ -1,6 +1,8 @@
 name: kashano-grab
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '*/10 * * * *'
 permissions:
   contents: write
 jobs:
