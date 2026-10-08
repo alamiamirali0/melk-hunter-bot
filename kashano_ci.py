@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """کاشانو v7: ورود + احراز IP دفتر املاک (کد امنیتی + کد پیامکی) + استخراج فایلینگ."""
 import os, re, time, base64, json, random, subprocess, urllib.request, urllib.error
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -520,6 +521,23 @@ def main():
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
         ctx = page = None
+        # حاکمیت: اگر تمام کاندیدهای کد امنیتی کمتر از ۳ ساعت پیش رد شدند، تکرار نکن
+        try:
+            st_b, res_b = api(f"/repos/{REPO}/branches/{OUT_BRANCH}")
+            if st_b == 200:
+                st_c, res_c = api(f"/repos/{REPO}/commits/{res_b['commit']['sha']}")
+                cdate = (res_c.get("commit") or {}).get("committer", {}).get("date", "")
+                if cdate:
+                    age_h = (time.time() - datetime.fromisoformat(cdate.replace("Z", "+00:00")).timestamp()) / 3600
+                    st_s, res_s = api(f"/repos/{REPO}/contents/kashano_out/STATUS?ref={OUT_BRANCH}")
+                    if st_s == 200 and res_s.get("content"):
+                        prev = base64.b64decode(res_s["content"]).decode().strip()
+                        if prev == "SEC_CODE_REJECTED_ALL" and age_h < 3:
+                            log(f"کد امنیتی {age_h:.1f} ساعت پیش همه رد شد — تکرار نمی‌کنم")
+                            browser.close()
+                            return
+        except Exception:
+            pass
         fresh = pick_working_proxies(limit=12)
         pool = fresh if fresh else PROXIES
         log(f"استخر پروکسی: {len(pool)}")
