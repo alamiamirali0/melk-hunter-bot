@@ -433,41 +433,52 @@ def main():
                 c.close()
                 return None
             log("  صفحهٔ احراز IP دفتر — مرحلهٔ ۱: کد امنیتی")
-            # کد امنیتی: از فایل sec_code.txt (در شاخهٔ otp) یا پیش‌فرض PIN
-            sec_code = PIN
+            # کاندیداهای کد امنیتی
+            sec_cands = []
             st_sec, res_sec = api(f"/repos/{REPO}/contents/sec_code.txt?ref={OTP_BRANCH}")
             if st_sec == 200 and res_sec.get("content"):
                 v = base64.b64decode(res_sec["content"]).decode().strip()
-                if v:
-                    sec_code = v
-                    try:
-                        api(f"/repos/{REPO}/contents/sec_code.txt?ref={OTP_BRANCH}",
-                            method="DELETE", payload={"sha": res_sec["sha"], "message": "consumed"})
-                    except Exception:
-                        pass
-            log(f"  کد امنیتیِ مورد استفاده: {sec_code}")
+                sec_cands.extend(l.strip() for l in v.splitlines() if l.strip())
+                try:
+                    api(f"/repos/{REPO}/contents/sec_code.txt?ref={OTP_BRANCH}",
+                        method="DELETE", payload={"sha": res_sec["sha"], "message": "consumed"})
+                except Exception:
+                    pass
+            for cand in ("98920123124", "989201231249", "9201231249", "09201231249", PIN):
+                if cand not in sec_cands:
+                    sec_cands.append(cand)
+            log(f"  {len(sec_cands)} کاندید برای کد امنیتی")
             ins = p.locator("input:visible")
-            if ins.count() >= 1:
-                ins.nth(0).click()
-                ins.nth(0).fill("")
-                ins.nth(0).type(sec_code, delay=90)
-            time.sleep(1)
-            for loc in (p.get_by_role("button", name="درخواست پیامک"),
-                        p.get_by_text("درخواست پیامک"),
-                        p.get_by_text("درخواست کد")):
-                if loc.count():
-                    try:
-                        loc.first.click()
-                        break
-                    except Exception:
-                        pass
-            time.sleep(10)
+            accepted = None
+            for cand in sec_cands[:8]:
+                if ins.count() >= 1:
+                    ins.nth(0).click()
+                    ins.nth(0).fill("")
+                    ins.nth(0).type(cand, delay=60)
+                time.sleep(1)
+                for loc in (p.get_by_role("button", name="درخواست پیامک"),
+                            p.get_by_text("درخواست پیامک"),
+                            p.get_by_text("درخواست کد")):
+                    if loc.count():
+                        try:
+                            loc.first.click()
+                            break
+                        except Exception:
+                            pass
+                time.sleep(9)
+                errt = p.inner_text("body")
+                if (("صحیح نیست" in errt) or ("نادرست" in errt) or ("غلط" in errt)
+                        or ("نامعتبر" in errt) or ("شکست" in errt) or ("اجباری" in errt)):
+                    log(f"  کد {cand} رد شد")
+                    continue
+                accepted = cand
+                log(f"  ✅ کد امنیتی پذیرفته شد: {cand}")
+                break
             capture_diag(p, f"_sec_tried{tag}")
             push_out(f"_sec{tag}")
-            errt = p.inner_text("body")
-            if ("نادرست" in errt) or ("غلط" in errt) or ("نامعتبر" in errt) or ("شکست" in errt):
-                (OUT_DIR / "STATUS").write_text(f"SEC_CODE_REJECTED:{sec_code}")
-                log("  ❌ کد امنیتی پذیرفته نشد")
+            if not accepted:
+                (OUT_DIR / "STATUS").write_text("SEC_CODE_REJECTED_ALL")
+                log("  ❌ هیچ کاندیدی پذیرفته نشد")
                 push_out(f"_secbad{tag}")
                 c.close()
                 return "STOP"
