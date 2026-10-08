@@ -5,6 +5,7 @@ on:
     - cron: '*/10 * * * *'
 permissions:
   contents: write
+  actions: write
 jobs:
   grab:
     runs-on: ubuntu-latest
