@@ -130,7 +130,7 @@ def proxy_url(ip, port, proto):
     return f"http://{ip}:{port}"
 
 
-def test_proxy(ux, timeout=10):
+def test_proxy(ux, timeout=8):
     r = subprocess.run(
         ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", str(timeout),
          "-x", ux, "https://kashano.ir/signin"],
@@ -138,8 +138,21 @@ def test_proxy(ux, timeout=10):
     return r.stdout.strip() == "200"
 
 
+def test_proxy_strong(ux):
+    """مرحلهٔ دوم: پروکسی باید دو بار و با دانلود کامل صفحه جواب دهد (ضدِ نیمه‌مرده)."""
+    for _ in range(2):
+        r = subprocess.run(
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "--max-time", "25",
+             "-x", ux, "https://kashano.ir/signin"],
+            capture_output=True, text=True)
+        if r.stdout.strip() != "200":
+            return False
+        time.sleep(3)
+    return True
+
+
 def pick_working_proxies(limit=15):
-    """فهرش تازه + تست موازی → پروکسی‌های زنده."""
+    """فهرست تازه + تست موازیِ دو‌مرحله‌ای → پروکسی‌های زنده."""
     uniq = fetch_fresh_proxies()
     urls = [proxy_url(ip, port, proto) for ip, port, proto in uniq]
     for px in PROXIES:
@@ -150,9 +163,16 @@ def pick_working_proxies(limit=15):
         for ux, ok in zip(urls, ex.map(test_proxy, urls)):
             if ok:
                 alive.append(ux)
-                log(f"  زنده: {ux}")
-    log(f"{len(alive)} پروکسی زنده از {len(urls)}")
-    return alive[:limit]
+    strong = []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for ux, ok in zip(alive, ex.map(test_proxy_strong, alive)):
+            if ok:
+                strong.append(ux)
+                log(f"  زنده (قوی): {ux}")
+            else:
+                log(f"  نیمه‌مرده، رد شد: {ux}")
+    log(f"{len(strong)} پروکسی قوی از {len(urls)}")
+    return (strong or alive)[:limit]
 
 
 def push_out(tag=""):
@@ -812,10 +832,18 @@ def main():
         pool = fresh if fresh else PROXIES
         log(f"استخر پروکسی: {len(pool)}")
         attempts = []
-        for rnd in range(3):
-            for i, px in enumerate(pool):
-                attempts.append((px, f"r{rnd}p{i}"))
+        order = list(pool)
+        random.shuffle(order)
+        for i, px in enumerate(order):
+            attempts.append((px, f"p{i}"))
+        if len(order) < 3:
+            for i, px in enumerate(order):
+                attempts.append((px, f"q{i}"))
+        t_budget = time.time() + 18 * 60
         for px, tag in attempts:
+            if time.time() > t_budget:
+                log("بودجهٔ زمانی پروکسی‌ها تمام شد — توقف این نوبت")
+                break
             res = attempt_login(browser, px, tag)
             if res == "STOP":
                 log("تلاش‌های بیشتر بی‌فایده است — توقف")
