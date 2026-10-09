@@ -380,7 +380,8 @@ def busy_check():
 
 
 def try_support_form(p):
-    """یک‌بار: درخواست ریست کد امنیتی از طریق فرم تماس کاشانو (با CAPTCHA)."""
+    """یک‌بار: درخواست ریست کد امنیتی از طریق فرم تماس کاشانو.
+    (فرم کد تصویر ندارد: نام / موبایل / ایمیل(اختیاری) / پیام / ارسال)"""
     def _read_flag(name):
         try:
             st, f = api(f"/repos/{REPO}/contents/kashano_out/{name}?ref={OUT_BRANCH}")
@@ -425,59 +426,6 @@ def try_support_form(p):
             ta.first.fill(msg)
         except Exception:
             pass
-        # CAPTCHA: اول از متن صفحه، وگرنه اسکرین‌شات تصویر + خواندن از code.txt
-        code = None
-        bodyt = p.inner_text("body")
-        mcap = re.search(r"کد امنیتی\s*:?\s*([0-9A-Za-z۰-۹]{3,8})\b", bodyt)
-        if mcap:
-            code = mcap.group(1).translate(str.maketrans("۰۱۲۳۴۵۶۷۸۹", "0123456789"))
-            log(f"  کد CAPTCHA از متن: {code}")
-        else:
-            cap_img = None
-            try:
-                imgs = p.locator("img:visible")
-                n = imgs.count()
-                for i in range(n):
-                    im = imgs.nth(i)
-                    srcattr = (im.get_attribute("src") or "").lower()
-                    alt = (im.get_attribute("alt") or "").lower()
-                    if any(k in srcattr + alt for k in ("captcha", "code", "verify", "کد", "recaptcha")):
-                        cap_img = im
-                        break
-                if cap_img is None and n:
-                    # آخرین تصویرِ کوچکِ صفحه معمولاً captcha است
-                    cap_img = imgs.nth(n - 1)
-            except Exception:
-                pass
-            if cap_img is not None:
-                try:
-                    cap_img.screenshot(path=str(OUT_DIR / "captcha.png"))
-                    push_out("_captcha")
-                    log("  تصویر CAPTCHA ثبت شد — ۱۰ دقیقه منتظر خواندن کد")
-                    deadline = time.time() + 600
-                    while time.time() < deadline:
-                        st, res = api(f"/repos/{REPO}/contents/{OTP_PATH}?ref={OTP_BRANCH}")
-                        if st == 200 and res.get("content"):
-                            code = base64.b64decode(res["content"]).decode().strip()
-                            try:
-                                api(f"/repos/{REPO}/contents/{OTP_PATH}?ref={OTP_BRANCH}",
-                                    method="DELETE", payload={"sha": res["sha"], "message": "consumed"})
-                            except Exception:
-                                pass
-                            break
-                        time.sleep(8)
-                except Exception as e:
-                    log("  خطای captcha:", type(e).__name__)
-        # فیلد کد امنیتی: آخرین inputِ text
-        if code:
-            for i in range(inp.count() - 1, -1, -1):
-                try:
-                    el = inp.nth(i)
-                    if (el.get_attribute("type") or "text") == "text":
-                        el.fill(code)
-                        break
-                except Exception:
-                    pass
         time.sleep(1)
         p.screenshot(path=str(OUT_DIR / "support_form.png"), full_page=True)
         (OUT_DIR / "support_form.html").write_text(p.content(), encoding="utf-8")
