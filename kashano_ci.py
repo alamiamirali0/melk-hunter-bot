@@ -385,6 +385,34 @@ def collect_rows(page):
     return rows
 
 
+def kill_stale_runs():
+    """اگر اجرای دیگری بیش از ۴۰ دقیقه گیر کرده، لغو می‌کنیم (با توکن خود workflow)."""
+    try:
+        cur_id = int(os.environ.get("GITHUB_RUN_ID", "0") or "0")
+    except ValueError:
+        cur_id = 0
+    killed = False
+    try:
+        st, res = api(f"/repos/{REPO}/actions/runs?status=in_progress&per_page=20")
+        if st == 200:
+            for r in res.get("workflow_runs", []):
+                if r["name"] != "kashano-grab" or r.get("id") == cur_id:
+                    continue
+                created = r.get("created_at", "")
+                try:
+                    age = time.time() - datetime.fromisoformat(created.replace("Z", "+00:00")).timestamp()
+                except Exception:
+                    continue
+                if age > 40 * 60:
+                    log(f"run #{r['run_number']} بیش از ۴۰ دقیقه مانده — لغو می‌کنم")
+                    st2, _ = api(f"/repos/{REPO}/actions/runs/{r['id']}/cancelations", method="POST")
+                    log(f"  لغو: {st2}")
+                    killed = True
+    except Exception as e:
+        log("خطا در لغو runهای گیرکرده:", e)
+    return killed
+
+
 def busy_check():
     """اگر اجرای دیگری فعال است، تکرار نکنیم."""
     try:
@@ -641,6 +669,9 @@ def main():
     UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
+    killed = kill_stale_runs()
+    if killed:
+        time.sleep(25)
     if busy_check():
         log("اجرای دیگری فعال است — این نوبت را رها می‌کنم (و زنجیره را تحریک نمی‌کنم)")
         sys.exit(3)
