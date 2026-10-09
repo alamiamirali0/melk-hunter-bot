@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """کاشانو v7: ورود + احراز IP دفتر املاک (کد امنیتی + کد پیامکی) + استخراج فایلینگ."""
-import os, re, time, base64, json, random, subprocess, urllib.request, urllib.error
+import os, re, sys, time, base64, json, random, subprocess, urllib.request, urllib.error
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -509,14 +509,60 @@ def try_support_form(p):
             pass
 
 
+def _pause_if_sec_window():
+    """اگر همهٔ کاندیدهای کد امنیتی تازه (کمتر از ۳ ساعت) رد شده‌اند،
+    تا پایان پنجره در همین اجرای خودکار صبر می‌کنیم — و در همین فاصله
+    اگر کاربر کد تازه بفرستد (sec_code.txt) فوراً ادامه می‌دهیم."""
+    try:
+        st_s, res_s = api(f"/repos/{REPO}/contents/kashano_out/STATUS?ref={OUT_BRANCH}")
+        if st_s != 200 or not res_s.get("content"):
+            return
+        prev = base64.b64decode(res_s["content"]).decode().strip()
+        if prev.split(" ")[0] != "SEC_CODE_REJECTED_ALL":
+            return
+        t0 = None
+        parts = prev.split(" ")
+        if len(parts) > 1:
+            try:
+                t0 = datetime.fromisoformat(parts[1].replace("Z", "+00:00")).timestamp()
+            except Exception:
+                t0 = None
+        if t0 is None:
+            t0 = time.time() - (3 * 3600 - 20 * 60)  # بدون زمان دقیق: ۲۰ دقیقه صبر
+        end_s = t0 + 3 * 3600
+        if end_s <= time.time():
+            log("پنجرهٔ ۳ ساعتهٔ کد امنیتی تمام شده — ادامهٔ عادی")
+            return
+        log(f"پنجرهٔ کد امنیتی تا {time.strftime('%H:%M:%S', time.gmtime(end_s))}Z فعال — "
+            f"منتظر می‌مانم (کد تازهٔ کاربر را هر ۳۰ ثانیه چک می‌کنم)")
+        seen = set()
+        while time.time() < end_s:
+            try:
+                st_k, f_k = api(f"/repos/{REPO}/contents/sec_code.txt?ref={OTP_BRANCH}")
+                if st_k == 200 and f_k.get("content"):
+                    code = base64.b64decode(f_k["content"]).decode().strip()
+                    if code and code not in seen:
+                        seen.add(code)
+                        log(f"کد تازه از کاربر رسید: {code} — ادامهٔ فوری")
+                        return
+            except Exception:
+                pass
+            time.sleep(30)
+        log("پنجره تمام شد — ادامهٔ عادی")
+    except Exception as e:
+        log("خطا در چک پنجرهٔ کد امنیتی:", e)
+
+
 def main():
     from playwright.sync_api import sync_playwright
     UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
 
     if busy_check():
-        log("اجرای دیگری فعال است — این نوبت را رها می‌کنم")
-        return
+        log("اجرای دیگری فعال است — این نوبت را رها می‌کنم (و زنجیره را تحریک نمی‌کنم)")
+        sys.exit(3)
+
+    _pause_if_sec_window()
 
     def is_blocked(p):
         try:
@@ -655,7 +701,8 @@ def main():
             capture_diag(p, f"_sec_tried{tag}")
             push_out(f"_sec{tag}")
             if not accepted:
-                (OUT_DIR / "STATUS").write_text("SEC_CODE_REJECTED_ALL")
+                (OUT_DIR / "STATUS").write_text(
+                    "SEC_CODE_REJECTED_ALL " + time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
                 log("  ❌ هیچ کاندیدی پذیرفته نشد")
                 push_out(f"_secbad{tag}")
                 c.close()
@@ -698,23 +745,6 @@ def main():
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True, args=["--no-sandbox"])
         ctx = page = None
-        # حاکمیت: اگر تمام کاندیدهای کد امنیتی کمتر از ۳ ساعت پیش رد شدند، تکرار نکن
-        try:
-            st_b, res_b = api(f"/repos/{REPO}/branches/{OUT_BRANCH}")
-            if st_b == 200:
-                st_c, res_c = api(f"/repos/{REPO}/commits/{res_b['commit']['sha']}")
-                cdate = (res_c.get("commit") or {}).get("committer", {}).get("date", "")
-                if cdate:
-                    age_h = (time.time() - datetime.fromisoformat(cdate.replace("Z", "+00:00")).timestamp()) / 3600
-                    st_s, res_s = api(f"/repos/{REPO}/contents/kashano_out/STATUS?ref={OUT_BRANCH}")
-                    if st_s == 200 and res_s.get("content"):
-                        prev = base64.b64decode(res_s["content"]).decode().strip()
-                        if prev == "SEC_CODE_REJECTED_ALL" and age_h < 3:
-                            log(f"کد امنیتی {age_h:.1f} ساعت پیش همه رد شد — تکرار نمی‌کنم")
-                            browser.close()
-                            return
-        except Exception:
-            pass
         fresh = pick_working_proxies(limit=12)
         pool = fresh if fresh else PROXIES
         log(f"استخر پروکسی: {len(pool)}")
