@@ -1,0 +1,10 @@
+name: keeper-test
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 * * * *'
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo cron-alive
