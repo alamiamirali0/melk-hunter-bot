@@ -380,8 +380,9 @@ def busy_check():
 
 
 def try_support_form(p):
-    """یک‌بار: درخواست ریست کد امنیتی از طریق فرم تماس کاشانو.
-    (فرم کد تصویر ندارد: نام / موبایل / ایمیل(اختیاری) / پیام / ارسال)"""
+    """درخواست ریست کد احراز IP از طریق فرم تماس کاشانو.
+    ساختار واقعی فرم: نام / موبایل / ایمیل(اختیاری) / پیام(textarea) / کد امنیتی (SVG 150x36 + دکمهٔ تازه‌سازی) + ارسال
+    کد SVG را اسکرین‌شات می‌گیریم، می‌فرستیم branch، کد خوانده‌شده در code.txt می‌آید."""
     def _read_flag(name):
         try:
             st, f = api(f"/repos/{REPO}/contents/kashano_out/{name}?ref={OUT_BRANCH}")
@@ -408,9 +409,8 @@ def try_support_form(p):
             log("  فرم تماس: textarea پیدا نشد")
             return
         msg = ("سلام. من مالک حساب کاشانو با شمارهٔ 09201231249 هستم. برای ورود از بیرون دفتر، "
-               "سایت کد امنیتی «احراز IP دفتر املاک» می‌خواهد که در دسترس من نیست. "
-               "لطفاً کد امنیتی را برای همین شماره ارسال کنید یا آن را ریست/غیرفعال کنید. با تشکر")
-        # فیلدها به ترتیب: نام / موبایل / ایمیل / پیام / کد امنیتی
+               "سایت کد «احراز IP دفتر املاک» می‌خواهد که در دسترس من نیست. "
+               "لطفاً این کد را برای همین شماره پیامک کنید یا آن را ریست/غیرفعال کنید. ممنون")
         inp = p.locator("input:visible")
         for i in range(inp.count()):
             el = inp.nth(i)
@@ -426,28 +426,143 @@ def try_support_form(p):
             ta.first.fill(msg)
         except Exception:
             pass
-        time.sleep(1)
-        p.screenshot(path=str(OUT_DIR / "support_form.png"), full_page=True)
-        (OUT_DIR / "support_form.html").write_text(p.content(), encoding="utf-8")
-        b = p.get_by_role("button", name="ارسال")
-        clicked = False
-        if b.count():
+        cap_svg = None
+        for sel in ('span[class*="bg-[#e0e0e0]"] svg', 'svg[width="150"][height="36"]'):
             try:
-                b.first.click()
-                clicked = True
+                loc = p.locator(sel)
+                if loc.count():
+                    cap_svg = loc.first
+                    break
             except Exception:
                 pass
-        if clicked:
-            time.sleep(9)
-        after = p.inner_text("body")
-        ok = ("ثبت شد" in after) or ("موفق" in after) or ("تشکر" in after) or ("دریافت" in after) or ("ارسال شد" in after)
-        log("  نتیجهٔ فرم:", "✅ ثبت شد" if ok else "❓ نامشخص — اسکرین‌شات ثبت شد")
-        p.screenshot(path=str(OUT_DIR / "support_after.png"), full_page=True)
-        ts = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-        (OUT_DIR / ("support_done.txt" if ok else "support_failed.txt")).write_text(ts)
-        push_out("_support")
-        p.goto("https://kashano.ir/signin", wait_until="domcontentloaded", timeout=45000)
-        time.sleep(8)
+        done = False
+        for rnd in range(3):
+            if cap_svg is None or not cap_svg.count():
+                log("  تصویر کد امنیتی پیدا نشد")
+                break
+            try:
+                cap_svg.screenshot(path=str(OUT_DIR / "captcha.png"))
+            except Exception:
+                p.screenshot(path=str(OUT_DIR / "captcha.png"), full_page=True)
+            push_out("_captcha")
+            log(f"  [فرم] تصویر کد امنیتی ثبت شد (دور {rnd+1}) — منتظر خواندن کد")
+            code = None
+            deadline = time.time() + 600
+            while time.time() < deadline:
+                try:
+                    st, res = api(f"/repos/{REPO}/contents/{OTP_PATH}?ref={OTP_BRANCH}")
+                    if st == 200 and res.get("content"):
+                        code = base64.b64decode(res["content"]).decode().strip()
+                        try:
+                            api(f"/repos/{REPO}/contents/{OTP_PATH}?ref={OTP_BRANCH}",
+                                method="DELETE", payload={"sha": res["sha"], "message": "consumed"})
+                        except Exception:
+                            pass
+                        break
+                except Exception:
+                    pass
+                time.sleep(8)
+            if not code:
+                log("  کدی برای کد امنیتی نرسید — ارسال نمی‌کنم")
+                break
+            code = code.translate(str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")) if any(c.isdigit() for c in code) else code
+            before = ""
+            try:
+                before = p.inner_text("body")
+            except Exception:
+                pass
+            # فیلد کد = آخرین input
+            try:
+                cap_inp = inp.nth(inp.count() - 1)
+                cap_inp.fill("")
+                cap_inp.type(code, delay=50)
+            except Exception as e:
+                log("  خطا در پر کردن کد:", type(e).__name__)
+            time.sleep(1)
+            p.screenshot(path=str(OUT_DIR / "support_form.png"), full_page=True)
+            b = p.get_by_role("button", name="ارسال")
+            if b.count():
+                try:
+                    b.first.click()
+                except Exception:
+                    pass
+            time.sleep(8)
+            after = ""
+            try:
+                after = p.inner_text("body")
+            except Exception:
+                pass
+            p.screenshot(path=str(OUT_DIR / "support_after.png"), full_page=True)
+            diff = ""
+            if before and after:
+                # کلمات تازه‌ای که بعد از ارسال ظاهر شده‌اند
+                before_words = set(before.split())
+                diff = " ".join(w for w in after.split() if w not in before_words)
+            err_hit = any(k in diff for k in ("اجباری", "صحیح نیست", "نادرست", "اشتباه", "دوباره", "نامعتبر", "خطا"))
+            ok_hit = any(k in diff for k in ("ثبت شد", "موفقیت", "ارسال شد", "پیام شما"))
+            # پاک شدن فیلد نام = نشانهٔ ثبت موفق
+            name_cleared = False
+            try:
+                for i in range(inp.count()):
+                    ph = (inp.nth(i).get_attribute("placeholder") or "")
+                    if "فارسی" in ph:
+                        name_cleared = (inp.nth(i).input_value() or "") == ""
+                        break
+            except Exception:
+                pass
+            log(f"  نتیجهٔ دور {rnd+1}: diff={diff[:80]!r} err={err_hit} ok={ok_hit} name_cleared={name_cleared}")
+            if err_hit:
+                log("  خطا از سایت — کد را تازه می‌کنم")
+                try:
+                    ref = p.locator('span[class*="cursor-pointer"] svg, svg[class*="cursor-pointer"]')
+                    if ref.count():
+                        ref.first.click()
+                        time.sleep(3)
+                except Exception:
+                    p.reload(wait_until="domcontentloaded", timeout=45000)
+                    time.sleep(6)
+                    ta = p.locator("textarea:visible")
+                    inp = p.locator("input:visible")
+                    if ta.count():
+                        ta.first.fill(msg)
+                    for i in range(inp.count()):
+                        el = inp.nth(i)
+                        try:
+                            ph = (el.get_attribute("placeholder") or "")
+                            if "فارسی" in ph:
+                                el.fill("مالک حساب کاشانو")
+                            elif "09" in ph:
+                                el.fill(PHONE)
+                        except Exception:
+                            pass
+                    for sel in ('span[class*="bg-[#e0e0e0]"] svg', 'svg[width="150"][height="36"]'):
+                        try:
+                            loc = p.locator(sel)
+                            if loc.count():
+                                cap_svg = loc.first
+                                break
+                        except Exception:
+                            pass
+                continue
+            if ok_hit or name_cleared:
+                log("  ✅✅ فرم پشتیبانی ثبت شد")
+                (OUT_DIR / "support_done.txt").write_text(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+                push_out("_support")
+                done = True
+                break
+            # نه خطا، نه موفقیت — به‌عنوان نامشخص ثبت می‌کنیم (با مدرک) ولی اسپم نمی‌کنیم
+            log("  نتیجهٔ نامشخص — مدرک ثبت شد")
+            (OUT_DIR / "support_failed.txt").write_text(time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
+            push_out("_support")
+            break
+        if not done:
+            (OUT_DIR / "STATUS").write_text("SUPPORT_TRIED")
+            push_out("_support")
+        try:
+            p.goto("https://kashano.ir/signin", wait_until="domcontentloaded", timeout=45000)
+            time.sleep(8)
+        except Exception:
+            pass
     except Exception as e:
         log("  خطای فرم پشتیبانی:", type(e).__name__, str(e)[:100])
         try:
