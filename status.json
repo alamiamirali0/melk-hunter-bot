@@ -1,20 +1,20 @@
 {
-  "time_utc": "2026-10-24 16:27:30",
+  "time_utc": "2026-10-24 16:29:01",
   "run": "40108284412",
-  "log_age_sec": -1,
+  "log_age_sec": 0,
   "heartbeat_file": true,
   "heartbeat": {
-    "ts": 1792837655.2547166,
-    "ok_ts": 1792837655.2541637,
+    "ts": 1792859339.6693037,
+    "ok_ts": 1792859339.6693008,
     "updates": 0,
     "fails": 0,
     "restarts": 0,
     "last_error": "",
-    "started": 1792816966.8864107,
-    "last_ok": 1792837655.2541664,
+    "started": 1792859252.645217,
+    "last_ok": 1792859339.6693027,
     "gap": 0.0,
-    "pid": 2853,
-    "reason": "polling-dead"
+    "pid": 2683,
+    "polling": true
   },
-  "bot_log_tail": ""
+  "bot_log_tail": "  File \"/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/telegram/ext/_utils/networkloop.py\", line 154, in do_action\n    action_cb_task.result()\n  File \"/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/telegram/ext/_updater.py\", line 340, in polling_action_cb\n    updates = await self.bot.get_updates(\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/telegram/ext/_extbot.py\", line 680, in get_updates\n    updates = await super().get_updates(\n              ^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/telegram/_bot.py\", line 4767, in get_updates\n    await self._post(\n  File \"/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/telegram/_bot.py\", line 712, in _post\n    return await self._do_post(\n           ^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/telegram/ext/_extbot.py\", line 378, in _do_post\n    return await super()._do_post(\n           ^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/telegram/_bot.py\", line 741, in _do_post\n    result = await request.post(\n             ^^^^^^^^^^^^^^^^^^^\n  File \"/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/telegram/request/_baserequest.py\", line 198, in post\n    result = await self._request_wrapper(\n             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/opt/hostedtoolcache/Python/3.12.15/x64/lib/python3.12/site-packages/telegram/request/_baserequest.py\", line 375, in _request_wrapper\n    raise exception\ntelegram.error.Conflict: Conflict: terminated by other getUpdates request; make sure that only one bot instance is running"
 }
