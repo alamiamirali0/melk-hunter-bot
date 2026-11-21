@@ -1,17 +1,17 @@
 {
-  "time_utc": "2026-11-21 21:12:31",
+  "time_utc": "2026-11-21 21:14:03",
   "run": "44938382492",
-  "log_age_sec": 1,
+  "log_age_sec": 24,
   "heartbeat_file": true,
   "heartbeat": {
-    "ts": 1795295544.5002155,
-    "ok_ts": 1795295544.5002136,
+    "ts": 1795295634.5073102,
+    "ok_ts": 1795295634.5073078,
     "updates": 0,
     "fails": 0,
     "restarts": 0,
     "last_error": "NetworkError: httpx.ConnectError: ",
     "started": 1795287517.538801,
-    "last_ok": 1795295544.500215,
+    "last_ok": 1795295634.5073097,
     "gap": 0.0,
     "pid": 2624,
     "polling": true
